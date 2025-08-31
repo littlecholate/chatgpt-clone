@@ -11,3 +11,11 @@ html {
 ::-webkit-scrollbar {
     display: none;
 }
+
+.flex-center {
+    @apply flex items-center justify-center;
+}
+
+.shrink-icon {
+    @apply h-12 w-12 hover:bg-gray-500/20;
+}
