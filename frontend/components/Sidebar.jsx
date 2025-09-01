@@ -1,9 +1,10 @@
 import React from 'react';
 import { Menu as MenuIcon, MessageSquarePlus, CircleUserRound } from 'lucide-react';
+import ChatLabel from './ChatLabel';
 
 const Sidebar = ({ expand, setExpand }) => {
     return (
-        <div className={`pt-8 pb-8 p-4 flex flex-col justify-between bg-[#212327] z-50 ${expand ? 'w-64' : 'w-20'}`}>
+        <div className={`pt-8 pb-8 p-4 flex flex-col justify-between bg-[#212327] z-50 ${expand ? 'w-96' : 'w-20'}`}>
             <div>
                 <div className={`${expand ? 'flex items-center justify-between' : 'flex-center'}`}>
                     {expand && <p className="mx-auto text-xl text-white">Chat Bot</p>}
@@ -27,6 +28,7 @@ const Sidebar = ({ expand, setExpand }) => {
                 <div className={`mt-8 text-white/25 text-sm ${expand ? 'block' : 'hidden'}`}>
                     <p className="my-1">Recents</p>
                     {/* chat label */}
+                    <ChatLabel />
                 </div>
             </div>
 
