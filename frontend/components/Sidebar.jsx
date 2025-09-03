@@ -1,13 +1,24 @@
-import React from 'react';
-import { Menu as MenuIcon, MessageSquarePlus, CircleUserRound } from 'lucide-react';
+'use client';
+import React, { useState } from 'react';
+import { Menu as MenuIcon, MessageSquarePlus, CircleUserRound, Search, LogOut, Paperclip } from 'lucide-react';
 import ChatLabel from './ChatLabel';
+import { useAppContext } from '@/context/AppContext';
+import Link from 'next/link';
 
-const Sidebar = ({ expand, setExpand }) => {
+const Sidebar = () => {
+    const [expand, setExpand] = useState(false);
+    const { user, chats, setSelectedChat } = useAppContext();
+    const [search, setSearch] = useState('');
+
     return (
         <div className={`pt-8 pb-8 p-4 flex flex-col justify-between bg-[#212327] z-50 ${expand ? 'w-96' : 'w-20'}`}>
             <div>
                 <div className={`${expand ? 'flex items-center justify-between' : 'flex-center'}`}>
-                    {expand && <p className="mx-auto text-xl text-white">Chat Bot</p>}
+                    {expand && (
+                        <Link href="/" className="mx-auto text-xl text-white">
+                            Chat Bot
+                        </Link>
+                    )}
                     <button
                         onClick={() => (expand ? setExpand(false) : setExpand(true))}
                         className="shrink-icon rounded-lg flex-center text-white cursor-pointer"
@@ -25,21 +36,62 @@ const Sidebar = ({ expand, setExpand }) => {
                     {expand && <p>Create New Chat</p>}
                 </button>
 
+                {/* Search Conversations */}
+                <div
+                    className={`flex items-center gap-2 p-3 mt-4 border border-white/20 text-white rounded-md ${
+                        expand ? 'block' : 'hidden'
+                    }`}
+                >
+                    <Search size={24} />
+                    <input
+                        onChange={(e) => setSearch(e.target.value)}
+                        value={search}
+                        type="text"
+                        placeholder="Search history chat"
+                        className="text-xs placeholder:text-gray-100 outline-none"
+                    />
+                </div>
+
                 <div className={`mt-8 text-white/25 text-sm ${expand ? 'block' : 'hidden'}`}>
                     <p className="my-1">Recents</p>
                     {/* chat label */}
-                    <ChatLabel />
+                    <div>
+                        {chats
+                            .filter((chat) =>
+                                chat.messages[0]
+                                    ? chat.messages[0]?.content.toLowerCase().includes(search.toLowerCase())
+                                    : chat.name.toLowerCase().includes(search.toLowerCase())
+                            )
+                            .map((chat) => (
+                                <div key={chat._id} onClick={() => setSelectedChat(chat)}>
+                                    <ChatLabel chat={chat} />
+                                </div>
+                            ))}
+                    </div>
                 </div>
             </div>
 
-            {/* user account */}
-            <div
-                className={`mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
-                    expand ? 'gap-4 p-4 hover:bg-white/10' : 'shrink-icon'
-                }`}
-            >
-                <CircleUserRound size={24} />
-                {expand && <p>My Profile</p>}
+            <div>
+                <Link href="/attachments">
+                    <button
+                        className={`mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
+                            expand ? 'gap-4 p-4 bg-gray-600 hover:opacity-90' : 'shrink-icon'
+                        }`}
+                    >
+                        <Paperclip size={24} />
+                        {expand && <p>Attachments</p>}
+                    </button>
+                </Link>
+                {/* user account */}
+                <div
+                    className={`mt-8 p-4 gap-12 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
+                        expand ? 'hover:bg-white/10' : 'shrink-icon'
+                    }`}
+                >
+                    <CircleUserRound size={24} />
+                    {expand && <p>{user ? user.name : 'Login your account'}</p>}
+                    {user && <LogOut size={24} />}
+                </div>
             </div>
         </div>
     );
