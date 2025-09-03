@@ -38,7 +38,7 @@ const Sidebar = () => {
 
                 {/* Search Conversations */}
                 <div
-                    className={`flex items-center gap-2 p-3 mt-4 border border-white/20 text-white rounded-md ${
+                    className={`gap-2 p-3 mt-4 flex items-center border border-white/20 text-white rounded-md ${
                         expand ? 'block' : 'hidden'
                     }`}
                 >
@@ -48,7 +48,7 @@ const Sidebar = () => {
                         value={search}
                         type="text"
                         placeholder="Search history chat"
-                        className="text-xs placeholder:text-gray-100 outline-none"
+                        className="w-full text-sm placeholder:text-gray-100 outline-none"
                     />
                 </div>
 
@@ -63,9 +63,9 @@ const Sidebar = () => {
                                     : chat.name.toLowerCase().includes(search.toLowerCase())
                             )
                             .map((chat) => (
-                                <div key={chat._id} onClick={() => setSelectedChat(chat)}>
+                                <Link href="/" key={chat._id} onClick={() => setSelectedChat(chat)}>
                                     <ChatLabel chat={chat} />
-                                </div>
+                                </Link>
                             ))}
                     </div>
                 </div>

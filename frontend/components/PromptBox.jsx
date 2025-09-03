@@ -1,15 +1,27 @@
 import React from 'react';
 import { useState } from 'react';
-import { Paperclip, ArrowUp, Airplay, Brain } from 'lucide-react';
+import { Paperclip, Airplay, Brain } from 'lucide-react';
 
 const PromptBox = ({ isLoading, setIsLoading }) => {
     const [prompt, setPrompt] = useState('');
+    const [mode, setMode] = useState([]);
+
+    const handleSubmit = async (e) => {
+        if (isLoading) return;
+
+        e.preventDefault();
+        console.log(prompt);
+        setPrompt('');
+    };
 
     return (
-        <form className={`mt-16 p-6 w-full ${false ? 'max-w-3xl' : 'max-w-5xl'} rounded-3xl bg-[#404045] transition-all`}>
-            <textarea
+        <form
+            className={`mt-8 p-6 w-full ${false ? 'max-w-3xl' : 'max-w-5xl'} rounded-3xl bg-[#404045] transition-all`}
+            onSubmit={handleSubmit}
+        >
+            <input
                 className="outline-none w-full text-xl resize-none overflow-hidden break-words bg-transparent"
-                rows={2}
+                rows={1}
                 placeholder="Enter your questions."
                 required
                 onChange={(e) => setPrompt(e.target.value)}
@@ -31,10 +43,6 @@ const PromptBox = ({ isLoading, setIsLoading }) => {
                         RAG
                     </p>
                 </div>
-
-                <button className={`p-2 rounded-full ${prompt.trim() ? 'bg-primary' : 'bg-[#71717a]'} cursor-pointer`}>
-                    <ArrowUp size={24} />
-                </button>
             </div>
         </form>
     );

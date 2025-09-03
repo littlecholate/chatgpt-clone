@@ -1,5 +1,6 @@
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
+import '../assets/prism.css';
 import { AppContextProvider } from '@/context/AppContext';
 import Sidebar from '@/components/Sidebar';
 
@@ -26,7 +27,7 @@ export default function RootLayout({ children }) {
                     <div className="h-screen flex">
                         {/* -- sidebar -- */}
                         <Sidebar />
-                        {children}
+                        <div className="relative px-4 pb-8 flex-1 flex-center flex-col text-white bg-[#292a2d]">{children}</div>
                     </div>
                 </body>
             </html>
