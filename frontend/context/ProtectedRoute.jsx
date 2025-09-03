@@ -9,7 +9,7 @@ export default function ProtectedRoute() {
     const { user, setUser } = useAppContext();
 
     useEffect(() => {
-        fetch('/api/auth/check')
+        fetch('http://127.0.0.1:8000/docs#/protected')
             .then((res) => res.json())
             .then((data) => {
                 if (!data.user && pathname !== '/login') {

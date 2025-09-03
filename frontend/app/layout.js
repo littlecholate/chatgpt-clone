@@ -3,6 +3,9 @@ import './globals.css';
 import '../assets/prism.css';
 import { AppContextProvider } from '@/context/AppContext';
 import Sidebar from '@/components/Sidebar';
+import { Toaster } from 'react-hot-toast';
+import ProtectedRoute from '@/context/ProtectedRoute';
+import ProtectedLayout from './(protected)/layout';
 
 const geistSans = Geist({
     variable: '--font-geist-sans',
@@ -23,12 +26,14 @@ export default function RootLayout({ children }) {
     return (
         <AppContextProvider>
             <html lang="en">
-                <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+                <body className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#292a2d]`}>
+                    <Toaster />
                     <div className="h-screen flex">
                         {/* -- sidebar -- */}
                         <Sidebar />
-                        <div className="relative px-4 pb-8 flex-1 flex-center flex-col text-white bg-[#292a2d]">{children}</div>
+                        <div className="relative px-4 pb-8 flex-1 flex-center flex-col text-white"></div>
                     </div>
+                    {children}
                 </body>
             </html>
         </AppContextProvider>
