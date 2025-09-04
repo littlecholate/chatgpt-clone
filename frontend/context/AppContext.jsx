@@ -3,6 +3,7 @@ import { dummyChats, dummyUserData } from '@/assets/dummyData';
 import { createContext, useContext, useEffect, useState } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useRouter } from 'next/navigation';
 
 axios.defaults.baseURL = 'http://127.0.0.1:8000/';
 
@@ -18,11 +19,9 @@ export const AppContextProvider = ({ children }) => {
     const fetchUser = async () => {
         try {
             const { data } = await axios.get('/protected', { headers: { Authorization: `Bearer ${token}` } });
-            if (data.success) {
-                console.log(data);
-                setUser(data.user);
-            } else {
-                toast.error(data.message);
+
+            if (data) {
+                setUser(data.data);
             }
         } catch (error) {
             toast.error(error.message);
@@ -33,17 +32,18 @@ export const AppContextProvider = ({ children }) => {
 
     const fetchUsersChats = async () => {
         try {
-            const { data } = await axios.get('/chat', { headers: { Authorization: `Bearer ${token}` } });
-            if (data.success) {
-                setChats(data.chats);
-                if (data.chats.length === 0) {
+            const { data } = await axios.get(`/chat?user_id=${user.id}`, { headers: { Authorization: `Bearer ${token}` } });
+
+            console.log('chats data: ' + data);
+
+            if (data) {
+                setChats(data);
+                if (data.length === 0) {
                     await createNewChat();
                     return fetchUsersChats();
                 } else {
-                    setSelectedChat(data.chats[0]);
+                    setSelectedChat(data[0]);
                 }
-            } else {
-                toast.error(data.message);
             }
         } catch (error) {
             toast.error(error.message);
@@ -53,8 +53,7 @@ export const AppContextProvider = ({ children }) => {
     const createNewChat = async () => {
         try {
             if (!user) return toast('Login to create a new chat');
-            // navigate to '/'
-            await axios.get('/chat', { headers: { Authorization: `Bearer ${token}` } });
+            await axios.post('/chat', { user_id: user.id });
             await fetchUsersChats();
         } catch (error) {
             toast.error(error.message);
@@ -81,7 +80,7 @@ export const AppContextProvider = ({ children }) => {
     }, [token]);
 
     useEffect(() => {
-        const storedToken = localStorage.getItem('access_token');
+        const storedToken = localStorage.getItem('token');
         console.log('token: ' + storedToken);
         if (storedToken) {
             setToken(storedToken);

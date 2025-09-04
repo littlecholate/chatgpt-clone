@@ -14,19 +14,19 @@ export default function Home() {
     // When selectedChat is changed, rerender the component
     useEffect(() => {
         if (selectedChat) {
-            console.log(selectedChat);
+            // console.log('selected chat data: ' + JSON.stringify(selectedChat));
             setMessages(selectedChat.messages);
         }
     }, [selectedChat]);
 
-    // useEffect(() => {
-    //     if (containerRef.current) {
-    //         containerRef.current.scrollTo({
-    //             top: containerRef.current.scrollHeight,
-    //             behavior: 'smooth',
-    //         });
-    //     }
-    // }, [messages]);
+    useEffect(() => {
+        if (containerRef.current) {
+            containerRef.current.scrollTo({
+                top: containerRef.current.scrollHeight,
+                behavior: 'smooth',
+            });
+        }
+    }, [messages]);
 
     return (
         <>
@@ -52,7 +52,7 @@ export default function Home() {
                 </div>
             )}
             {/* prompt box */}
-            <PromptBox isLoading={isLoading} setIsLoading={setIsLoading} />
+            <PromptBox isLoading={isLoading} setIsLoading={setIsLoading} setMessages={setMessages} selectedChat={selectedChat} />
         </>
     );
 }

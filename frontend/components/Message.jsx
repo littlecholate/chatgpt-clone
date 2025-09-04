@@ -37,7 +37,7 @@ const Message = ({ message }) => {
                     {message.role === 'user' ? (
                         <div className="flex flex-col gap-3">
                             <span>{message.content}</span>
-                            <span className="text-sm opacity-70">{moment(message.timestamp).fromNow()}</span>
+                            <span className="text-sm opacity-70">{moment(message.create_date).fromNow()}</span>
                         </div>
                     ) : (
                         <div className="flex flex-col gap-3">
@@ -45,7 +45,7 @@ const Message = ({ message }) => {
                             <span className="reset-tw">
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                             </span>
-                            <span className="text-sm opacity-70">{moment(message.timestamp).fromNow()}</span>
+                            <span className="text-sm opacity-70">{moment(message.create_date).fromNow()}</span>
                         </div>
                     )}
                 </div>

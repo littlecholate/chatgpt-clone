@@ -1,7 +1,28 @@
 import React from 'react';
 import { SquarePen, Trash2 } from 'lucide-react';
+import { useAppContext } from '@/context/AppContext';
+import toast from 'react-hot-toast';
 
 const ChatLabel = ({ chat }) => {
+    const { axios, setChats, fetchUsersChats } = useAppContext();
+
+    const handleDeleteChat = async (e, chatId) => {
+        try {
+            e.stopPropagation();
+            const confirm = window.confirm('Are you sure ?');
+            if (!confirm) return;
+            const { data } = await axios.delete(`/chat/${chatId}`);
+            console.log(data);
+            if (data.success) {
+                setChats((prev) => prev.filter((chat) => chat.id !== chatId));
+                await fetchUsersChats();
+                toast.success(data.message);
+            }
+        } catch (error) {
+            toast.error(error.message);
+        }
+    };
+
     return (
         <>
             <div className="p-2 flex items-center justify-between rounded-lg text-white/80 hover:bg-white/10 group cursor-pointer">
@@ -11,7 +32,10 @@ const ChatLabel = ({ chat }) => {
                     <div className="px-3 py-2 hover:bg-white/10 rounded-lg hidden group-hover:block">
                         <SquarePen size={20} />
                     </div>
-                    <div className="px-3 py-2 hover:bg-white/10 rounded-lg hidden group-hover:block">
+                    <div
+                        className="px-3 py-2 hover:bg-white/10 rounded-lg hidden group-hover:block"
+                        onClick={(e) => toast.promise(handleDeleteChat(e, chat.id), { loading: 'deleting...' })}
+                    >
                         <Trash2 size={20} />
                     </div>
                 </div>

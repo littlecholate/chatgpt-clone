@@ -1,17 +1,40 @@
 import React from 'react';
 import { useState } from 'react';
 import { Paperclip, Airplay, Brain } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { useAppContext } from '@/context/AppContext';
 
-const PromptBox = ({ isLoading, setIsLoading }) => {
+const PromptBox = ({ isLoading, setIsLoading, selectedChat, setMessages }) => {
     const [prompt, setPrompt] = useState('');
     const [mode, setMode] = useState([]);
+    const { user, axios, token, setToken } = useAppContext();
 
     const handleSubmit = async (e) => {
-        if (isLoading) return;
+        try {
+            e.preventDefault();
+            if (isLoading) return;
+            if (!user) return toast('Login to send messages');
+            setIsLoading(true);
 
-        e.preventDefault();
-        console.log(prompt);
-        setPrompt('');
+            const promptCopy = prompt;
+            setPrompt('');
+            // set user prompt messages
+            setMessages((prev) => [...prev, { role: 'user', content: prompt, create_date: Date.now() }]);
+
+            const { data } = await axios.post(`/chat/${selectedChat.id}/messages`, { role: 'user', content: prompt });
+
+            if (data) {
+                // set robot messages
+                setMessages((prev) => [...prev, { role: 'robot', content: data.content, create_date: data.create_date }]);
+            } else {
+                setPrompt(promptCopy);
+            }
+        } catch (error) {
+            toast.error(error.message);
+        } finally {
+            setPrompt('');
+            setIsLoading(false);
+        }
     };
 
     return (

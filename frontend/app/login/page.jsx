@@ -2,6 +2,7 @@
 import { useAppContext } from '@/context/AppContext';
 import React, { useState } from 'react';
 import toast from 'react-hot-toast';
+import { useRouter } from 'next/navigation';
 
 const Login = () => {
     const [state, setState] = useState('login');
@@ -9,19 +10,24 @@ const Login = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const { axios, setToken } = useAppContext();
+    const router = useRouter();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        const url = state === 'login' ? '/login' : '/signup';
+        const url = state === 'login' ? '/auth/login' : '/auth/signup';
 
         try {
-            const { data } = await axios.post(url, { name, email, password });
-            console.log(data);
-            if (data.success) {
-                setToken(data.token);
-                localStorage.setItem('token', data.token);
-            } else {
-                toast.error(data.message);
+            const { data } = await axios.post(url, { username: name, email: email, password: password });
+
+            if (data) {
+                console.log(data);
+                if (state !== 'login') {
+                    setState('login');
+                } else {
+                    setToken(data.token);
+                    localStorage.setItem('token', data.token);
+                    router.push('/');
+                }
             }
         } catch (error) {
             toast.error(error.message);

@@ -7,30 +7,14 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 
 const Sidebar = () => {
-    const [expand, setExpand] = useState(false);
-    const { user, chats, setSelectedChat, createNewChat, axois, setChats, fetchUsersChats, setToken } = useAppContext();
+    const [expand, setExpand] = useState(true);
+    const { user, chats, setSelectedChat, createNewChat, token, setToken } = useAppContext();
     const [search, setSearch] = useState('');
 
-    const logout = () => {
+    const handleLogout = () => {
         localStorage.removeItem('token');
         setToken(null);
         toast.success('Logged out successfully');
-    };
-
-    const deleteChat = async (e, chatId) => {
-        try {
-            e.stopPropagation();
-            const confirm = window.confirm('Are you sure ?');
-            if (!confirm) return;
-            const { data } = await axios.post('/delete', { chatId }, { headers: { Authorization: token } });
-            if (data.success) {
-                setChats((prev) => prev.filter((chat) => chat._id !== chatId));
-                await fetchUsersChats();
-                toast.success(data.message);
-            }
-        } catch (error) {
-            toast.error(error.message);
-        }
     };
 
     return (
@@ -87,7 +71,7 @@ const Sidebar = () => {
                                     : chat.name.toLowerCase().includes(search.toLowerCase())
                             )
                             .map((chat) => (
-                                <Link href="/" key={chat._id} onClick={() => setSelectedChat(chat)}>
+                                <Link href="/" key={chat.id} onClick={() => setSelectedChat(chat)}>
                                     <ChatLabel chat={chat} />
                                 </Link>
                             ))}
@@ -109,13 +93,18 @@ const Sidebar = () => {
                 {/* user account */}
                 <Link
                     href={user ? '/' : '/login'}
+                    onClick={() => {
+                        if (user) {
+                            handleLogout();
+                        }
+                    }}
                     className={`mt-8 p-4 gap-12 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
                         expand ? 'hover:bg-white/10' : 'shrink-icon'
                     }`}
                 >
                     <CircleUserRound size={24} />
-                    {expand && <p>{user ? user.name : 'Login your account'}</p>}
-                    {user && <LogOut onClick={logout} size={24} />}
+                    {expand && <p>{user ? user.username : 'Login your account'}</p>}
+                    {user && <LogOut size={24} />}
                 </Link>
             </div>
         </div>
