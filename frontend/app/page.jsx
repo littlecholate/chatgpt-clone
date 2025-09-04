@@ -7,15 +7,30 @@ import { useAppContext } from '@/context/AppContext';
 export default function Home() {
     const containerRef = useRef(null);
 
-    const { selectedChat } = useAppContext();
+    const { selectedChat, axios } = useAppContext();
     const [messages, setMessages] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
+
+    const fetchSelectedChatMessages = async () => {
+        try {
+            setIsLoading(true);
+            const { data } = await axios.get(`/chat/${selectedChat.id}/messages`);
+
+            if (data) {
+                setMessages(data);
+            }
+        } catch (error) {
+            toast.error(error.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     // When selectedChat is changed, rerender the component
     useEffect(() => {
         if (selectedChat) {
             // console.log('selected chat data: ' + JSON.stringify(selectedChat));
-            setMessages(selectedChat.messages);
+            fetchSelectedChatMessages();
         }
     }, [selectedChat]);
 
@@ -36,7 +51,7 @@ export default function Home() {
                     <p className="text-2xl">Hi, how can I help you?</p>
                 </>
             ) : (
-                <div className="w-full max-w-5xl h-[600px] overflow-auto">
+                <div ref={containerRef} className="w-full max-w-5xl h-[600px] overflow-auto">
                     {messages.map((message, index) => (
                         <Message key={index} message={message} />
                     ))}
@@ -46,9 +61,9 @@ export default function Home() {
             {/* loading animation */}
             {isLoading && (
                 <div className="loader mt-6 flex items-center gap-1.5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-amber-50 animate-bounce"></div>
-                    <div className="w-1.5 h-1.5 rounded-full bg-amber-50 animate-bounce"></div>
-                    <div className="w-1.5 h-1.5 rounded-full bg-amber-50 animate-bounce"></div>
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-50 animate-bounce"></div>
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-50 animate-bounce"></div>
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-50 animate-bounce"></div>
                 </div>
             )}
             {/* prompt box */}

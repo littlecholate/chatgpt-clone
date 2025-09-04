@@ -10,25 +10,94 @@ const PromptBox = ({ isLoading, setIsLoading, selectedChat, setMessages }) => {
     const { user, axios, token, setToken } = useAppContext();
 
     const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (isLoading) return;
+        if (!user) return toast('Login to send messages');
+
         try {
-            e.preventDefault();
-            if (isLoading) return;
-            if (!user) return toast('Login to send messages');
             setIsLoading(true);
 
             const promptCopy = prompt;
             setPrompt('');
-            // set user prompt messages
+            // 1. set user prompt messages immediately
             setMessages((prev) => [...prev, { role: 'user', content: prompt, create_date: Date.now() }]);
 
-            const { data } = await axios.post(`/chat/${selectedChat.id}/messages`, { role: 'user', content: prompt });
+            // 2. create a placeholder robot message we'll keep appending to
+            const robotId = crypto?.randomUUID?.() || String(Date.now());
+            setMessages((prev) => [...prev, { id: robotId, role: 'robot', content: '', create_date: Date.now() }]);
 
-            if (data) {
-                // set robot messages
-                setMessages((prev) => [...prev, { role: 'robot', content: data.content, create_date: data.create_date }]);
-            } else {
-                setPrompt(promptCopy);
+            // 3. stream messages from backend
+            // cannot use axios, Fetch (with res.body.getReader()) is the only browser-native way today to consume a streaming body. - by chatgpt
+            const res = await fetch(`http://127.0.0.1:8000/chat/${selectedChat.id}/messages/stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    // If you use JWT:
+                    // ...(user?.token ? { Authorization: `Bearer ${user.token}` } : {}),
+                },
+                body: JSON.stringify({ content: promptCopy }),
+            });
+            if (!res.ok || !res.body) {
+                throw new Error(`HTTP ${res.status}`);
             }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            // 4. read SSE chunks
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                // SSE messages are separated by a blank line
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop() || '';
+
+                for (const chunk of parts) {
+                    // we only care about "data:" lines and "event:done"
+                    const lines = chunk.split('\n');
+                    let event = 'message';
+                    let data = '';
+
+                    for (const line of lines) {
+                        if (!line) continue;
+                        if (line.startsWith(':')) continue; // comment/heartbeat
+                        if (line.startsWith('event:')) event = line.slice(6).trim();
+                        else if (line.startsWith('data:')) data += line.slice(5);
+                    }
+
+                    if (event === 'done') {
+                        // finished
+                        continue;
+                    }
+
+                    if (data) {
+                        // append token(s) to the robot message
+                        setMessages((prev) =>
+                            prev.map((m) => (m.id === robotId ? { ...m, content: (m.content || '') + data } : m))
+                        );
+                    }
+                }
+            }
+
+            // flush any remainder (rare)
+            if (buffer.startsWith('data:')) {
+                const leftover = buffer.slice(5);
+                setMessages((prev) => prev.map((m) => (m.id === robotId ? { ...m, content: (m.content || '') + leftover } : m)));
+            }
+
+            // original code
+            // const { data } = await axios.post(`/chat/${selectedChat.id}/messages`, { role: 'user', content: prompt });
+
+            // if (data) {
+            //     // set robot messages
+            //     setMessages((prev) => [...prev, { role: 'robot', content: data.content, create_date: data.create_date }]);
+            // } else {
+            //     setPrompt(promptCopy);
+            // }
         } catch (error) {
             toast.error(error.message);
         } finally {

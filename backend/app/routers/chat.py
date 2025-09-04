@@ -1,6 +1,7 @@
 from typing import List
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, status, HTTPException
 from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
 
 from app.core.database import get_db
 from app.service.chatService import ChatSessionService
@@ -11,6 +12,7 @@ from app.db.schema.chat import (
     MessageOutput,
     MessageInCreateBody,
     MessageInUpdate,
+    MessageIn,
 )
 chatRouter = APIRouter()
 messagesRouter = APIRouter()
@@ -124,6 +126,29 @@ def delete_message_in_session(
     except Exception as e:
         print(e)
         raise e
+
+@chatRouter.post("/{session_id}/messages/stream")
+def post_message_stream(session_id: int, body: MessageIn, session: Session = Depends(get_db)):
+    text = (body.content or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="content is empty")
+
+    generator = ChatSessionService(session=session).stream_user_and_robot_message(session_id=session_id, user_text=text)
+
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",  # adjust for production
+        },
+    )
+
+@chatRouter.post("/{session_id}/messages/dummy")
+def dummy(session_id: int, body: MessageIn, session: Session = Depends(get_db)):
+    return {"role" : "robot", "content": "hi", "create_at":"1111111"}
+
 
 @messagesRouter.put("/{message_id}", response_model=MessageOutput)
 def update_message(

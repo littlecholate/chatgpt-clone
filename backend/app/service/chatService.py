@@ -1,6 +1,8 @@
-from typing import List
+from typing import Generator, List, Dict
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, selectinload
+from contextlib import suppress
+import httpx
 
 from app.db.repository.chatRepo import ChatSessionRepository, MessageRepository
 from app.db.models.chat import ChatSession
@@ -14,6 +16,8 @@ from app.db.schema.chat import (
     MessageInUpdate,
 )
 
+ROBOT_ENDPOINT = "http://localhost:8000/v1/chat/completions"
+ROBOT_MODEL = "Qwen/Qwen3-0.6B"
 
 class ChatSessionService:
     def __init__(self, session: Session):
@@ -106,3 +110,73 @@ class ChatSessionService:
         if not updated:
             raise HTTPException(status_code=404, detail="Message not found")
         return updated
+
+    def stream_user_and_robot_message(
+        self, session_id: int, user_text: str
+    ) -> Generator[str, None, None]:
+        """
+        - Save user msg
+        - Call robot endpoint with history + user input
+        - Yield tokens as SSE
+        - Save final robot msg
+        """
+
+        # 1. Save user msg
+        if not self._sessions.session_exists(session_id=session_id):
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        msg_in = MessageInCreate(session_id=session_id, role="user", content=user_text)
+        self._messages.create_message(data=msg_in)  # auto-title handled in repo
+
+        # 2. Build history including system prompt
+        history = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Do not show hidden reasoning or thinking steps. Only provide the final answer.",
+            }
+        ]
+        """Convert DB messages to [{role, content}, ...]."""
+        msgs = self._messages.list_messages_by_session(
+            session_id=session_id, limit=100, offset=0, ascending=True
+        )
+        history.extend([{"role": m.role, "content": m.content} for m in msgs])
+
+        # 3. Prepare request payload
+        payload = {
+            "model": ROBOT_MODEL,
+            "messages": history,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "stream": True,
+        }
+
+        pieces: List[str] = []
+
+        try:
+            # 4. Stream from robot with httpx
+            with httpx.stream("POST", ROBOT_ENDPOINT, json=payload, timeout=None) as r:
+                # r.iter_lines already return strings
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        data = line[len("data: "):]
+                        if data.strip() == "[DONE]":
+                            break
+
+                        import json
+                        obj = json.loads(data)
+                        delta = obj["choices"][0]["delta"].get("content")
+                        if delta:
+                            pieces.append(delta)
+                            yield f"data:{delta}\n\n"
+
+            final_text = "".join(pieces).strip()
+
+            # 5. Save robot msg
+            msg_in = MessageInCreate(session_id=session_id, role="robot", content=final_text)
+            self._messages.create_message(data=msg_in)  # auto-title handled in repo
+
+            yield "event:done\ndata:ok\n\n"
+
+        finally:
+            with suppress(Exception):
+                pass

@@ -8,6 +8,10 @@ class MessageBase(BaseModel):
     content: str
 
 
+class MessageIn(BaseModel):
+    content: str
+
+    
 class MessageInCreate(MessageBase):
     session_id: int
 

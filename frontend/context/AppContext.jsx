@@ -3,7 +3,6 @@ import { dummyChats, dummyUserData } from '@/assets/dummyData';
 import { createContext, useContext, useEffect, useState } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
-import { useRouter } from 'next/navigation';
 
 axios.defaults.baseURL = 'http://127.0.0.1:8000/';
 

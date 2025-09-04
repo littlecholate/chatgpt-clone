@@ -38,7 +38,10 @@ const Sidebar = () => {
                     className={`mt-8 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
                         expand ? 'gap-4 p-4 bg-gray-600 hover:opacity-90' : 'shrink-icon'
                     }`}
-                    onClick={createNewChat}
+                    onClick={() => {
+                        createNewChat();
+                        setExpand(true);
+                    }}
                 >
                     <MessageSquarePlus size={24} />
                     {expand && <p>Create New Chat</p>}
@@ -63,7 +66,7 @@ const Sidebar = () => {
                 <div className={`mt-8 text-white/25 text-sm ${expand ? 'block' : 'hidden'}`}>
                     <p className="my-1">Recents</p>
                     {/* chat label */}
-                    <div>
+                    <div className="h-100 overflow-scroll">
                         {chats
                             .filter((chat) =>
                                 chat.messages[0]
@@ -98,13 +101,13 @@ const Sidebar = () => {
                             handleLogout();
                         }
                     }}
-                    className={`mt-8 p-4 gap-12 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
+                    className={`mt-6 p-4 gap-12 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
                         expand ? 'hover:bg-white/10' : 'shrink-icon'
                     }`}
                 >
-                    <CircleUserRound size={24} />
+                    <CircleUserRound size={28} />
                     {expand && <p>{user ? user.username : 'Login your account'}</p>}
-                    {user && <LogOut size={24} />}
+                    {user && <LogOut size={28} />}
                 </Link>
             </div>
         </div>

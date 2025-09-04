@@ -4,7 +4,7 @@ import { useAppContext } from '@/context/AppContext';
 import toast from 'react-hot-toast';
 
 const ChatLabel = ({ chat }) => {
-    const { axios, setChats, fetchUsersChats } = useAppContext();
+    const { axios, setChats, selectedChat, fetchUsersChats } = useAppContext();
 
     const handleDeleteChat = async (e, chatId) => {
         try {
@@ -12,8 +12,8 @@ const ChatLabel = ({ chat }) => {
             const confirm = window.confirm('Are you sure ?');
             if (!confirm) return;
             const { data } = await axios.delete(`/chat/${chatId}`);
-            console.log(data);
-            if (data.success) {
+
+            if (data) {
                 setChats((prev) => prev.filter((chat) => chat.id !== chatId));
                 await fetchUsersChats();
                 toast.success(data.message);
@@ -25,7 +25,11 @@ const ChatLabel = ({ chat }) => {
 
     return (
         <>
-            <div className="p-2 flex items-center justify-between rounded-lg text-white/80 hover:bg-white/10 group cursor-pointer">
+            <div
+                className={`mt-2 p-2 flex items-center justify-between rounded-lg text-white/80 hover:bg-white/10 group cursor-pointer ${
+                    chat.id === selectedChat.id ? 'bg-white/10' : ''
+                }`}
+            >
                 <p className="py-2 truncate">{chat.messages.length > 0 ? chat.messages[0].content.slice(0, 32) : chat.name}</p>
                 {/* rename and delete icon */}
                 <div className="ml-4 flex-center group">
