@@ -4,11 +4,34 @@ import { Menu as MenuIcon, MessageSquarePlus, CircleUserRound, Search, LogOut, P
 import ChatLabel from './ChatLabel';
 import { useAppContext } from '@/context/AppContext';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
 
 const Sidebar = () => {
     const [expand, setExpand] = useState(false);
-    const { user, chats, setSelectedChat } = useAppContext();
+    const { user, chats, setSelectedChat, createNewChat, axois, setChats, fetchUsersChats, setToken } = useAppContext();
     const [search, setSearch] = useState('');
+
+    const logout = () => {
+        localStorage.removeItem('token');
+        setToken(null);
+        toast.success('Logged out successfully');
+    };
+
+    const deleteChat = async (e, chatId) => {
+        try {
+            e.stopPropagation();
+            const confirm = window.confirm('Are you sure ?');
+            if (!confirm) return;
+            const { data } = await axios.post('/delete', { chatId }, { headers: { Authorization: token } });
+            if (data.success) {
+                setChats((prev) => prev.filter((chat) => chat._id !== chatId));
+                await fetchUsersChats();
+                toast.success(data.message);
+            }
+        } catch (error) {
+            toast.error(error.message);
+        }
+    };
 
     return (
         <div className={`pt-8 pb-8 p-4 flex flex-col justify-between bg-[#212327] z-50 ${expand ? 'w-96' : 'w-20'}`}>
@@ -31,6 +54,7 @@ const Sidebar = () => {
                     className={`mt-8 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
                         expand ? 'gap-4 p-4 bg-gray-600 hover:opacity-90' : 'shrink-icon'
                     }`}
+                    onClick={createNewChat}
                 >
                     <MessageSquarePlus size={24} />
                     {expand && <p>Create New Chat</p>}
@@ -83,15 +107,16 @@ const Sidebar = () => {
                     </button>
                 </Link>
                 {/* user account */}
-                <div
+                <Link
+                    href={user ? '/' : '/login'}
                     className={`mt-8 p-4 gap-12 mx-auto w-full rounded-lg flex-center text-white cursor-pointer ${
                         expand ? 'hover:bg-white/10' : 'shrink-icon'
                     }`}
                 >
                     <CircleUserRound size={24} />
                     {expand && <p>{user ? user.name : 'Login your account'}</p>}
-                    {user && <LogOut size={24} />}
-                </div>
+                    {user && <LogOut onClick={logout} size={24} />}
+                </Link>
             </div>
         </div>
     );

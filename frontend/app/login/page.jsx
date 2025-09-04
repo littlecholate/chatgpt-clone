@@ -1,14 +1,31 @@
 'use client';
+import { useAppContext } from '@/context/AppContext';
 import React, { useState } from 'react';
+import toast from 'react-hot-toast';
 
 const Login = () => {
     const [state, setState] = useState('login');
     const [name, setName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const { axios, setToken } = useAppContext();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const url = state === 'login' ? '/login' : '/signup';
+
+        try {
+            const { data } = await axios.post(url, { name, email, password });
+            console.log(data);
+            if (data.success) {
+                setToken(data.token);
+                localStorage.setItem('token', data.token);
+            } else {
+                toast.error(data.message);
+            }
+        } catch (error) {
+            toast.error(error.message);
+        }
     };
 
     return (

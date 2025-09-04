@@ -5,7 +5,6 @@ import { AppContextProvider } from '@/context/AppContext';
 import Sidebar from '@/components/Sidebar';
 import { Toaster } from 'react-hot-toast';
 import ProtectedRoute from '@/context/ProtectedRoute';
-import ProtectedLayout from './(protected)/layout';
 
 const geistSans = Geist({
     variable: '--font-geist-sans',
@@ -31,9 +30,8 @@ export default function RootLayout({ children }) {
                     <div className="h-screen flex">
                         {/* -- sidebar -- */}
                         <Sidebar />
-                        <div className="relative px-4 pb-8 flex-1 flex-center flex-col text-white"></div>
+                        <div className="relative px-4 pb-8 flex-1 flex-center flex-col text-white">{children}</div>
                     </div>
-                    {children}
                 </body>
             </html>
         </AppContextProvider>
