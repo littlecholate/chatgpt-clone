@@ -1,31 +1,57 @@
 # app/services/web_search.py
-import os, httpx
+import os
+import httpx
 
-TAVILY_API = "https://api.tavily.com/search"
-TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
+SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
+SERPAPI_KEY = "2bc8a7241a4fd9aea8b963a22d1b419864dfaa5ac1b0a6b2107101d3275dc631"
 
-def web_search_summary(query: str, max_results: int = 5, timeout_s: float = 12.0) -> str:
+def web_search_summary(
+    query: str,
+    max_results: int = 5,
+    timeout_s: float = 12.0,
+    engine: str = "google",   # or "google_news"
+    hl: str = "zh-TW",        # UI language
+    gl: str = "tw",           # Geo
+) -> str:
     """
-    Returns compact markdown bullets: - [Title](URL) — snippet
-    Returns "" if not configured or on failure.
+    Use SerpAPI to fetch results and return compact markdown:
+      - [Title](URL) — snippet
+    Returns "" if SERPAPI_API_KEY missing, query empty, or request fails.
     """
-    if not (TAVILY_KEY and query.strip()):
+    if not (SERPAPI_KEY and query.strip()):
         return ""
+
+    params = {
+        "engine": engine,
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "num": max(1, min(max_results, 10)),
+        "hl": hl,
+        "gl": gl,
+    }
+
     try:
-        payload = {"api_key": TAVILY_KEY, "query": query, "max_results": max_results}
         with httpx.Client(timeout=timeout_s) as client:
-            r = client.post(TAVILY_API, json=payload)
+            r = client.get(SERPAPI_ENDPOINT, params=params)
             r.raise_for_status()
             data = r.json()
     except Exception:
         return ""
 
-    results = data.get("results") or []
-    lines = []
+    results = data.get("organic_results") or data.get("news_results") or []
+    if not results:
+        return ""
+
+    bullets = []
     for item in results[:max_results]:
-        title = (item.get("title") or item.get("url") or "Result").strip()
-        url = (item.get("url") or "").strip()
-        snippet = (item.get("content") or "").replace("\n", " ").strip()[:240]
+        title = (item.get("title") or item.get("link") or "Result").strip()
+        url = (item.get("link") or item.get("link_url") or "").strip()
+        snippet = (
+            item.get("snippet")
+            or item.get("excerpt")
+            or item.get("content")
+            or ""
+        ).replace("\n", " ").strip()[:240]
         if url:
-            lines.append(f"- [{title}]({url}) — {snippet}")
-    return "\n".join(lines)
+            bullets.append(f"- [{title}]({url}) — {snippet}")
+    return "\n".join(bullets)

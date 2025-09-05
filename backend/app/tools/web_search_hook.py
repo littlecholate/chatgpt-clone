@@ -1,32 +1,59 @@
 # app/services/web_search.py
 import os, httpx
 
-TAVILY_API = "https://api.tavily.com/search"
-TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
+SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
+SERPAPI_KEY = "2bc8a7241a4fd9aea8b963a22d1b419864dfaa5ac1b0a6b2107101d3275dc631"
 
-def web_search_summary(query: str, max_results: int = 5, timeout_s: float = 12.0) -> str:
+def web_search_summary(
+    query: str,
+    max_results: int = 5,
+    timeout_s: float = 12.0,
+    engine: str = "google",
+    hl: str = "en",   # or "zh-TW"
+    gl: str = "us",   # or "tw"
+) -> str:
     """
-    Returns compact markdown bullets: Title (URL) — short snippet.
-    Gracefully returns "" if anything fails.
+    Uses SerpAPI (Google engine) to fetch results and returns compact markdown:
+    - [Title](URL) — snippet
+    Returns "" if not configured or on failure.
     """
-    if not TAVILY_KEY:
-        return ""  # silently skip if not configured
+    if not (SERPAPI_KEY and query.strip()):
+        return ""
+
+    params = {
+        "engine": engine,         # "google", "google_news", etc.
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "num": max(1, min(max_results, 10)),  # SerpAPI supports up to 10 per page
+        "hl": hl,
+        "gl": gl,
+    }
 
     try:
-        payload = {"api_key": TAVILY_KEY, "query": query, "max_results": max_results}
         with httpx.Client(timeout=timeout_s) as client:
-            r = client.post(TAVILY_API, json=payload)
+            r = client.get(SERPAPI_ENDPOINT, params=params)
             r.raise_for_status()
             data = r.json()
     except Exception:
         return ""
 
-    results = data.get("results") or []
+    # Prefer organic results for generic queries
+    results = data.get("organic_results") or []
+    if not results and data.get("news_results"):
+        results = data["news_results"]
+
     lines = []
     for item in results[:max_results]:
-        title = (item.get("title") or item.get("url") or "Result").strip()
-        url = (item.get("url") or "").strip()
-        snippet = (item.get("content") or "").replace("\n", " ").strip()[:240]
+        title = (item.get("title") or item.get("link") or "Result").strip()
+        url = (item.get("link") or item.get("link_url") or "").strip()
+        snippet = (
+            item.get("snippet")
+            or item.get("excerpt")
+            or item.get("content")
+            or ""
+        ).replace("\n", " ").strip()[:240]
+
         if url:
             lines.append(f"- [{title}]({url}) — {snippet}")
+
     return "\n".join(lines)

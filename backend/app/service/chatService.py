@@ -3,9 +3,14 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session, selectinload
 from contextlib import suppress
 import httpx
+import os, json
 
-from app.tools.web_search_hook import web_search_summary       # (NEW)
-from app.tools.search_gate import should_search                # (NEW)
+from app.rag_docs import rag_context  # NEW
+
+from app.tools.llm_tools import WEB_SEARCH_TOOL, run_tool_call, ToolCallBuffer
+
+from app.tools.web_search_hook import web_search_summary 
+from app.tools.search_gate import should_search  
 from app.db.repository.chatRepo import ChatSessionRepository, MessageRepository
 from app.db.models.chat import ChatSession
 from app.db.schema.chat import (
@@ -135,7 +140,9 @@ class ChatSessionService:
                 "role": "system",
                 "content": (
                     "You are a helpful assistant. Do not reveal hidden reasoning. "
-                    "If web results are provided below, prefer them for facts and cite links in markdown."
+                    "Almost generate at lease 30 words but at more 200 words"
+                    "If web results are provided below, prefer them for facts and cite links in markdown. "
+                    "If LOCAL FILE CONTEXT is provided, ground your answer in it and quote file names when relevant."
                 ),
             }
         ]
@@ -158,6 +165,14 @@ class ChatSessionService:
                         f"{search_md}"
                     ),
                 })
+
+        # RAG pre-hook: ONLY docs/test.txt
+        ctx = rag_context(user_text, k=3, max_words=400)
+        if ctx:
+            history.append({
+                "role": "system",
+                "content": "LOCAL FILE CONTEXT (use directly if relevant):\n\n" + ctx,
+            })
 
         # 3. Prepare request payload
         payload = {
@@ -193,6 +208,125 @@ class ChatSessionService:
             # 5. Save robot msg
             msg_in = MessageInCreate(session_id=session_id, role="robot", content=final_text)
             self._messages.create_message(data=msg_in)  # auto-title handled in repo
+
+            yield "event:done\ndata:ok\n\n"
+
+        finally:
+            with suppress(Exception):
+                pass
+
+    def stream_user_and_robot_message__(   # <- new method name for tool-calling
+        self,
+        session_id: int,
+        user_text: str,
+        max_tool_hops: int = 3,            # prevent infinite loops
+    ) -> Generator[str, None, None]:
+        """
+        - Save user msg
+        - Register web_search tool
+        - Stream assistant; if tool_call appears, execute locally, append role='tool' message, resume
+        - Yield tokens as SSE
+        - Save final assistant msg
+        """
+
+        # 1) Save user message
+        if not self._sessions.session_exists(session_id=session_id):
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        msg_in = MessageInCreate(session_id=session_id, role="user", content=user_text)
+        self._messages.create_message(data=msg_in)
+
+        # 2) Build history (system + prior messages)
+        history = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful assistant. Do not reveal hidden reasoning. "
+                    "You can call tools to get up-to-date or factual info. "
+                    "If you use web_search, cite links in markdown."
+                ),
+            }
+        ]
+        msgs = self._messages.list_messages_by_session(
+            session_id=session_id, limit=100, offset=0, ascending=True
+        )
+        history.extend([{"role": m.role, "content": m.content} for m in msgs])
+
+        # 3) Prepare initial payload with tool schema
+        payload = {
+            "model": ROBOT_MODEL,
+            "messages": history,
+            "tools": [WEB_SEARCH_TOOL],
+            "tool_choice": "auto",
+            "stream": True,
+        }
+
+        pieces: List[str] = []
+        tool_buf = ToolCallBuffer()
+
+        def _stream_once(req_payload) -> bool:
+            """
+            Stream once from the model.
+            Returns True if at least one tool_call was executed (meaning we should re-invoke);
+            Returns False when no further tool calls occurred (final answer likely done).
+            """
+            nonlocal pieces, history, tool_buf
+
+            tool_used_this_turn = False
+
+            with httpx.stream("POST", ROBOT_ENDPOINT, json=req_payload, timeout=None) as r:
+                for line in r.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+
+                    data = line[len("data: "):]
+                    if data.strip() == "[DONE]":
+                        break
+
+                    obj = json.loads(data)
+                    delta = obj["choices"][0]["delta"]
+
+                    # Tool-calling branch: accumulate chunks until complete
+                    if "tool_calls" in delta:
+                        for d in delta["tool_calls"]:
+                            complete = tool_buf.add_delta(d)
+                            if complete:
+                                # append the assistant's tool_calls message (required by spec)
+                                history.append({"role": "assistant", "tool_calls": [complete]})
+                                # run the tool locally
+                                tool_msg = run_tool_call(complete)
+                                history.append(tool_msg)
+                                tool_used_this_turn = True
+                        # don't emit text for tool meta
+                        continue
+
+                    # Normal text delta
+                    content_piece = delta.get("content")
+                    if content_piece:
+                        pieces.append(content_piece)
+                        yield f"data:{content_piece}\n\n"
+
+            return tool_used_this_turn
+
+        try:
+            # 4) Loop: stream → maybe tool → resume
+            hops = 0
+            need_resume = _stream_once(payload)
+            while need_resume and hops < max_tool_hops:
+                hops += 1
+                # after tools are appended to history, resume WITHOUT the tools schema
+                # (optional: you can include tools again if you expect chaining)
+                follow = {
+                    "model": ROBOT_MODEL,
+                    "messages": history,
+                    "stream": True,
+                }
+                need_resume = _stream_once(follow)
+
+            final_text = "".join(pieces).strip()
+
+            # 5) Save assistant message
+            msg_in = MessageInCreate(session_id=session_id, role="robot", content=final_text)
+            self._messages.create_message(data=msg_in)
 
             yield "event:done\ndata:ok\n\n"
 
