@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session, selectinload
 from contextlib import suppress
 import httpx
 
+from app.tools.web_search_hook import web_search_summary       # (NEW)
+from app.tools.search_gate import should_search                # (NEW)
 from app.db.repository.chatRepo import ChatSessionRepository, MessageRepository
 from app.db.models.chat import ChatSession
 from app.db.schema.chat import (
@@ -112,7 +114,7 @@ class ChatSessionService:
         return updated
 
     def stream_user_and_robot_message(
-        self, session_id: int, user_text: str
+        self, session_id: int, user_text: str, force_search: bool | None = None,
     ) -> Generator[str, None, None]:
         """
         - Save user msg
@@ -131,7 +133,10 @@ class ChatSessionService:
         history = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Do not show hidden reasoning or thinking steps. Only provide the final answer.",
+                "content": (
+                    "You are a helpful assistant. Do not reveal hidden reasoning. "
+                    "If web results are provided below, prefer them for facts and cite links in markdown."
+                ),
             }
         ]
         """Convert DB messages to [{role, content}, ...]."""
@@ -139,6 +144,20 @@ class ChatSessionService:
             session_id=session_id, limit=100, offset=0, ascending=True
         )
         history.extend([{"role": m.role, "content": m.content} for m in msgs])
+
+        # 2a) (NEW) Web search pre-hook (heuristic or force)
+        do_search = force_search if force_search is not None else should_search(user_text)
+        if do_search:
+            search_md = web_search_summary(user_text, max_results=5)
+            if search_md:
+                # Keep it as a separate system message to avoid polluting the user text.
+                history.append({
+                    "role": "system",
+                    "content": (
+                        "Web results (use if relevant; cite the links you rely on):\n\n"
+                        f"{search_md}"
+                    ),
+                })
 
         # 3. Prepare request payload
         payload = {
