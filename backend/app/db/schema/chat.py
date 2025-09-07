@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -32,8 +33,7 @@ class MessageOutput(MessageBase):
     session_id: int
     create_date: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ---------- Chat Session Schemas ----------
@@ -56,5 +56,4 @@ class ChatSessionOutput(ChatSessionBase):
     create_date: datetime
     messages: List[MessageOutput] = []
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

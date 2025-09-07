@@ -33,6 +33,9 @@ def get_current_user(
                 username=user.username,
                 email=user.email
             )
+        except HTTPException as http_exc:
+            raise http_exc
         except Exception as error:
-            raise error
+            # A generic exception should be re-raised as the intended HTTPException
+            raise auth_exception
     raise auth_exception
