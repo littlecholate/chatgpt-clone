@@ -5,12 +5,11 @@ from contextlib import suppress
 import httpx
 import os, json
 
-from app.rag_docs import rag_context  # NEW
+from app.tools.web_search import web_search_summary 
+# Imports for tool-calling
+from app.tools.llm_tool import WEB_SEARCH_TOOL, run_tool_call, ToolCallBuffer
+from app.chroma_rag import query_rag_db
 
-from app.tools.llm_tools import WEB_SEARCH_TOOL, run_tool_call, ToolCallBuffer
-
-from app.tools.web_search_hook import web_search_summary 
-from app.tools.search_gate import should_search  
 from app.db.repository.chatRepo import ChatSessionRepository, MessageRepository
 from app.db.models.chat import ChatSession
 from app.db.schema.chat import (
@@ -119,7 +118,7 @@ class ChatSessionService:
         return updated
 
     def stream_user_and_robot_message(
-        self, session_id: int, user_text: str, force_search: bool | None = None,
+        self, session_id: int, user_text: str, mode: int,
     ) -> Generator[str, None, None]:
         """
         - Save user msg
@@ -127,6 +126,8 @@ class ChatSessionService:
         - Yield tokens as SSE
         - Save final robot msg
         """
+        # Get the current frontend mode
+        # mode 1 = think, mode 2 = web_search, mode 3 = RAG
 
         # 1. Save user msg
         if not self._sessions.session_exists(session_id=session_id):
@@ -153,7 +154,7 @@ class ChatSessionService:
         history.extend([{"role": m.role, "content": m.content} for m in msgs])
 
         # 2a) (NEW) Web search pre-hook (heuristic or force)
-        do_search = force_search if force_search is not None else should_search(user_text)
+        do_search = True if mode == 2 else False
         if do_search:
             search_md = web_search_summary(user_text, max_results=5)
             if search_md:
@@ -166,19 +167,26 @@ class ChatSessionService:
                     ),
                 })
 
-        # RAG pre-hook: ONLY docs/test.txt
-        ctx = rag_context(user_text, k=3, max_words=400)
-        if ctx:
-            history.append({
-                "role": "system",
-                "content": "LOCAL FILE CONTEXT (use directly if relevant):\n\n" + ctx,
-            })
+        # RAG pre-hook (heuristic or force)
+        do_rag = True if mode == 3 else False
+        if do_rag:
+            rag_docs = query_rag_db(user_text, k=4)
+            if rag_docs:
+                rag_context = "\n\n".join(rag_docs)
+                history.append({
+                    "role": "system",
+                    "content": (
+                        "LOCAL FILE CONTEXT (use if relevant and cite the filename):\n\n"
+                        f"{rag_context}"
+                    ),
+                })
 
         # 3. Prepare request payload
+        enable_thinking = True if mode == 1 else False
         payload = {
             "model": ROBOT_MODEL,
             "messages": history,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
             "stream": True,
         }
 
@@ -209,7 +217,7 @@ class ChatSessionService:
             msg_in = MessageInCreate(session_id=session_id, role="robot", content=final_text)
             self._messages.create_message(data=msg_in)  # auto-title handled in repo
 
-            yield "event:done\ndata:ok\n\n"
+            yield "event:done\ndata:ok\n\n"                   
 
         finally:
             with suppress(Exception):
@@ -219,7 +227,7 @@ class ChatSessionService:
         self,
         session_id: int,
         user_text: str,
-        max_tool_hops: int = 3,            # prevent infinite loops
+        mode: int,
     ) -> Generator[str, None, None]:
         """
         - Save user msg
@@ -311,6 +319,7 @@ class ChatSessionService:
             # 4) Loop: stream → maybe tool → resume
             hops = 0
             need_resume = _stream_once(payload)
+            max_tool_hops = 3 # prevent infinite loops
             while need_resume and hops < max_tool_hops:
                 hops += 1
                 # after tools are appended to history, resume WITHOUT the tools schema

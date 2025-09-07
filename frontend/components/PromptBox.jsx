@@ -6,8 +6,8 @@ import { useAppContext } from '@/context/AppContext';
 
 const PromptBox = ({ isLoading, setIsLoading, selectedChat, setMessages }) => {
     const [prompt, setPrompt] = useState('');
-    const [mode, setMode] = useState([]);
-    const { user, axios, token, setToken } = useAppContext();
+    const [mode, setMode] = useState(0);
+    const { user } = useAppContext();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -35,7 +35,7 @@ const PromptBox = ({ isLoading, setIsLoading, selectedChat, setMessages }) => {
                     // If you use JWT:
                     // ...(user?.token ? { Authorization: `Bearer ${user.token}` } : {}),
                 },
-                body: JSON.stringify({ content: promptCopy }),
+                body: JSON.stringify({ content: promptCopy, mode: mode }),
             });
             if (!res.ok || !res.body) {
                 throw new Error(`HTTP ${res.status}`);
@@ -88,20 +88,11 @@ const PromptBox = ({ isLoading, setIsLoading, selectedChat, setMessages }) => {
                 const leftover = buffer.slice(5);
                 setMessages((prev) => prev.map((m) => (m.id === robotId ? { ...m, content: (m.content || '') + leftover } : m)));
             }
-
-            // original code
-            // const { data } = await axios.post(`/chat/${selectedChat.id}/messages`, { role: 'user', content: prompt });
-
-            // if (data) {
-            //     // set robot messages
-            //     setMessages((prev) => [...prev, { role: 'robot', content: data.content, create_date: data.create_date }]);
-            // } else {
-            //     setPrompt(promptCopy);
-            // }
         } catch (error) {
             toast.error(error.message);
         } finally {
             setPrompt('');
+            setMode(0);
             setIsLoading(false);
         }
     };
@@ -122,15 +113,36 @@ const PromptBox = ({ isLoading, setIsLoading, selectedChat, setMessages }) => {
 
             <div className="mt-8 flex items-center justify-between">
                 <div className="flex items-center gap-4">
-                    <p className="px-4 py-2 gap-2 text-sm flex items-center border border-gray-300/40 rounded-full cursor-pointer hover:bg-gray-500/20 transition">
+                    <p
+                        onClick={() => {
+                            mode == 1 ? setMode(0) : setMode(1);
+                        }}
+                        className={`px-4 py-2 gap-2 text-sm flex items-center border ${
+                            mode == 1 ? 'bg-orange-500/20' : 'border-gray-300/40'
+                        } rounded-full cursor-pointer hover:bg-orange-500/20 transition`}
+                    >
                         <Brain size={24} />
                         Think
                     </p>
-                    <p className="px-4 py-2 gap-2 text-sm flex items-center border border-gray-300/40 rounded-full cursor-pointer hover:bg-gray-500/20 transition">
+                    <p
+                        onClick={() => {
+                            mode == 2 ? setMode(0) : setMode(2);
+                        }}
+                        className={`px-4 py-2 gap-2 text-sm flex items-center border ${
+                            mode == 2 ? 'bg-orange-500/20' : 'border-gray-300/40'
+                        } rounded-full cursor-pointer hover:bg-orange-500/20 transition`}
+                    >
                         <Airplay size={24} />
                         Search
                     </p>
-                    <p className="px-4 py-2 gap-2 text-sm flex items-center border border-gray-300/40 rounded-full cursor-pointer hover:bg-gray-500/20 transition">
+                    <p
+                        onClick={() => {
+                            mode == 3 ? setMode(0) : setMode(3);
+                        }}
+                        className={`px-4 py-2 gap-2 text-sm flex items-center border ${
+                            mode == 3 ? 'bg-orange-500/20' : 'border-gray-300/40'
+                        } rounded-full cursor-pointer hover:bg-orange-500/20 transition`}
+                    >
                         <Paperclip size={24} />
                         RAG
                     </p>

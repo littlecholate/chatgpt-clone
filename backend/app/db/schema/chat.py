@@ -10,6 +10,7 @@ class MessageBase(BaseModel):
 
 class MessageIn(BaseModel):
     content: str
+    mode: int
 
     
 class MessageInCreate(MessageBase):

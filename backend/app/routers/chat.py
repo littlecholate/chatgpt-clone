@@ -133,7 +133,7 @@ def post_message_stream(session_id: int, body: MessageIn, session: Session = Dep
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="content is empty")
 
-    generator = ChatSessionService(session=session).stream_user_and_robot_message(session_id=session_id, user_text=text)
+    generator = ChatSessionService(session=session).stream_user_and_robot_message(session_id=session_id, user_text=text, mode=body.mode)
 
     return StreamingResponse(
         generator,
@@ -144,11 +144,6 @@ def post_message_stream(session_id: int, body: MessageIn, session: Session = Dep
             "Access-Control-Allow-Origin": "*",  # adjust for production
         },
     )
-
-@chatRouter.post("/{session_id}/messages/dummy")
-def dummy(session_id: int, body: MessageIn, session: Session = Depends(get_db)):
-    return {"role" : "robot", "content": "hi", "create_at":"1111111"}
-
 
 @messagesRouter.put("/{message_id}", response_model=MessageOutput)
 def update_message(

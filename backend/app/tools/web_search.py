@@ -1,5 +1,4 @@
 # app/services/web_search.py
-import os
 import httpx
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
@@ -14,9 +13,9 @@ def web_search_summary(
     gl: str = "tw",           # Geo
 ) -> str:
     """
-    Use SerpAPI to fetch results and return compact markdown:
-      - [Title](URL) — snippet
-    Returns "" if SERPAPI_API_KEY missing, query empty, or request fails.
+    Uses SerpAPI (Google engine) to fetch results and returns compact markdown:
+    - [Title](URL) — snippet
+    Returns "" if not configured or on failure.
     """
     if not (SERPAPI_KEY and query.strip()):
         return ""
