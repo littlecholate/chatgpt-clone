@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Usage:
+  python validate_c_file.py /path/to/file.c
+
+規則摘要：
+1) 在註解中找 "@command <EntryFunction>"
+2) 在 EntryFunction 內逐一找 "dRet = Function(...);" 的呼叫
+   - 僅檢查同一檔案中有定義的 Function
+3) 該 Function 內容需有 printTCFlowConsole(...)，且其參數內至少一個字串包含 "Step"
+4) 同一個 Function 內需有 if (dRet == FUN_ERROR) { ... printTestFailConsole(...); ... }
+5) 若 EntryFunction 內所有 "dRet = Function(...);" 都不符合，則 FAIL
+"""
+import sys
+import re
+from typing import Dict, Tuple, Optional, List
+
+def strip_comments(code: str) -> str:
+    """移除 // 與 /* */ 註解，但保留字串與字元常值。"""
+    i, n = 0, len(code)
+    out = []
+    IN_STR, IN_CHAR, IN_SL, IN_ML = 1, 2, 3, 4
+    state = 0
+    while i < n:
+        ch = code[i]
+        nxt = code[i+1] if i + 1 < n else ''
+        if state == 0:
+            if ch == '/' and nxt == '/':
+                state = IN_SL; i += 2; continue
+            if ch == '/' and nxt == '*':
+                state = IN_ML; i += 2; continue
+            if ch == '"':
+                state = IN_STR; out.append(ch); i += 1; continue
+            if ch == "'":
+                state = IN_CHAR; out.append(ch); i += 1; continue
+            out.append(ch); i += 1
+        elif state == IN_SL:
+            if ch == '\n':
+                out.append('\n'); state = 0
+            i += 1
+        elif state == IN_ML:
+            if ch == '*' and nxt == '/':
+                state = 0; i += 2
+            else:
+                i += 1
+        elif state == IN_STR:
+            out.append(ch)
+            if ch == '\\' and i + 1 < n:
+                out.append(code[i+1]); i += 2; continue
+            if ch == '"':
+                state = 0
+            i += 1
+        elif state == IN_CHAR:
+            out.append(ch)
+            if ch == '\\' and i + 1 < n:
+                out.append(code[i+1]); i += 2; continue
+            if ch == "'":
+                state = 0
+            i += 1
+    return ''.join(out)
+
+def find_comments_text(code: str) -> str:
+    """抽取所有註解內容，用來找 @command。"""
+    comments = []
+    i, n = 0, len(code)
+    while i < n:
+        if code[i:i+2] == '//':
+            j = code.find('\n', i+2)
+            if j == -1: j = n
+            comments.append(code[i:j]); i = j
+        elif code[i:i+2] == '/*':
+            j = code.find('*/', i+2)
+            if j == -1: j = n - 2
+            comments.append(code[i:j+2]); i = j + 2
+        else:
+            i += 1
+    return '\n'.join(comments)
+
+def match_brace_block_end(code: str, open_brace_idx: int) -> Optional[int]:
+    """從 '{' 位置起，回傳對應 '}' 的索引（含），忽略字串/字元常值內的括號。"""
+    assert code[open_brace_idx] == '{'
+    i, n, depth = open_brace_idx, len(code), 0
+    state = 'normal'
+    while i < n:
+        ch = code[i]
+        if state == 'normal':
+            if ch == '{': depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0: return i
+            elif ch == '"': state = 'str'
+            elif ch == "'": state = 'char'
+        elif state == 'str':
+            if ch == '\\': i += 1
+            elif ch == '"': state = 'normal'
+        elif state == 'char':
+            if ch == '\\': i += 1
+            elif ch == "'": state = 'normal'
+        i += 1
+    return None
+
+def build_function_index(code_wo_comments: str) -> Dict[str, Tuple[int, int]]:
+    """
+    建立 function 定義索引：name -> (body_start_index, body_end_index)
+    僅抓「定義」而非宣告（一定要接 '{'）。
+    """
+    func_map: Dict[str, Tuple[int, int]] = {}
+    header_re = re.compile(
+        r'''
+        (?P<ret>(?:[A-Za-z_]\w*|\s|\*|\n)+?)   # 返回型別/修飾
+        (?P<name>[A-Za-z_]\w*)\s*              # 名稱
+        \(\s*([^\);{}"]|"(?:\\.|[^"])*")*\)\s* # 參數（允許字串常值）
+        \{                                     # 接著一定是 body 的 {
+        ''', re.VERBOSE
+    )
+    for m in header_re.finditer(code_wo_comments):
+        name = m.group('name')
+        body_start = m.end() - 1  # 指向 '{'
+        body_end = match_brace_block_end(code_wo_comments, body_start)
+        if body_end is not None:
+            func_map[name] = (body_start, body_end)
+    return func_map
+
+def extract_body(code_wo_comments: str, start: int, end: int) -> str:
+    return code_wo_comments[start:end+1]
+
+def find_entry_function_name(full_code: str) -> Optional[str]:
+    comments_text = find_comments_text(full_code)
+    m = re.search(r'@command\s+([A-Za-z_]\w*)', comments_text)
+    return m.group(1) if m else None
+
+def string_literals(text: str) -> List[str]:
+    return [m.group(0)[1:-1] for m in re.finditer(r'"(?:\\.|[^"\\])*"', text)]
+
+def has_printTCFlowConsole_with_step(func_body: str) -> bool:
+    for call in re.finditer(r'printTCFlowConsole\s*\((.*?)\)\s*;', func_body, flags=re.DOTALL):
+        args = call.group(1)
+        for lit in string_literals(args):
+            if "Step" in lit:
+                return True
+    return False
+
+def has_if_error_block_with_fail_print(func_body: str) -> bool:
+    pos = 0
+    while True:
+        m = re.search(r'if\s*\(\s*dRet\s*==\s*FUN_ERROR\s*\)', func_body[pos:])
+        if not m:
+            return False
+        start = pos + m.end()
+        brace_idx = func_body.find('{', start)
+        if brace_idx == -1:
+            return False  # 這裡假設一定用大括號區塊
+        block_end = match_brace_block_end(func_body, brace_idx)
+        if block_end is None:
+            return False
+        block = func_body[brace_idx:block_end+1]
+        if re.search(r'printTestFailConsole\s*\(', block):
+            return True
+        pos = block_end + 1
+
+def validate_file(c_path: str):
+    try:
+        code = open(c_path, 'r', encoding='utf-8', errors='ignore').read()
+    except Exception as e:
+        print(f"Cannot read file: {e}")
+        sys.exit(1)
+
+    entry_name = find_entry_function_name(code)
+    if not entry_name:
+        print("FAIL: No @command <EntryFunction> found in comments.")
+        sys.exit(1)
+
+    code_nc = strip_comments(code)
+    func_index = build_function_index(code_nc)
+    if entry_name not in func_index:
+        print(f"FAIL: Entry function '{entry_name}' not defined in this file.")
+        sys.exit(1)
+
+    entry_start, entry_end = func_index[entry_name]
+    entry_body = extract_body(code_nc, entry_start, entry_end)
+
+    found_any = False
+    for m in re.finditer(r'\bdRet\s*=\s*([A-Za-z_]\w*)\s*\(', entry_body):
+        found_any = True
+        callee = m.group(1)
+        if callee not in func_index:
+            continue  # 規則2：略過非同檔定義的函式
+        c_start, c_end = func_index[callee]
+        callee_body = extract_body(code_nc, c_start, c_end)
+        cond3 = has_printTCFlowConsole_with_step(callee_body)
+        cond4 = has_if_error_block_with_fail_print(callee_body)
+        if cond3 and cond4:
+            print(f"PASS: Function '{callee}' called by entry '{entry_name}' meets both conditions.")
+            sys.exit(0)
+
+    if not found_any:
+        print(f"FAIL: Entry function '{entry_name}' contains no 'dRet = Function(...)' calls.")
+    else:
+        print("FAIL: No function called by the entry function satisfies both conditions (3) and (4).")
+    sys.exit(1)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python validate_c_file.py <path/to/file.c>")
+        sys.exit(2)
+    validate_file(sys.argv[1])

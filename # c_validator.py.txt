@@ -1,0 +1,169 @@
+# c_validator.py
+import re
+import sys
+import os
+
+def find_c_function_body(c_code: str, function_name: str) -> str | None:
+    """
+    在給定的 C 程式碼中，找到指定函式的完整內容 (從 '{' 到 '}')。
+    
+    Args:
+        c_code (str): C 檔案的完整原始碼內容。
+        function_name (str): 想要尋找的函式名稱。
+
+    Returns:
+        str | None: 如果找到，則返回該函式的內容 (不含函式宣告本身)；否則返回 None。
+    """
+    # 這個正規表示式會匹配函式的宣告，並找到第一個 '{'
+    # 它會處理返回類型、指標、不同的參數等情況
+    # 例如：int my_func(void), void * another_func(char *arg1, int arg2)
+    pattern = re.compile(
+        # 匹配返回類型和函數名
+        r'\b[\w\s\*]+\b\s+' + re.escape(function_name) + r'\s*\([^)]*\)\s*\{', 
+        re.MULTILINE
+    )
+    
+    match = pattern.search(c_code)
+    
+    if not match:
+        return None
+
+    # 找到函式主體的起始位置 (第一個 '{' 之後)
+    start_index = match.end()
+    
+    # 從起始位置開始，尋找匹配的 '}'
+    brace_level = 1
+    for i in range(start_index, len(c_code)):
+        char = c_code[i]
+        if char == '{':
+            brace_level += 1
+        elif char == '}':
+            brace_level -= 1
+        
+        if brace_level == 0:
+            # 找到了匹配的 '}'，返回之間的內容
+            return c_code[start_index:i]
+            
+    return None # 如果沒有找到匹配的 '}'
+
+def validate_c_file(file_path: str) -> bool:
+    """
+    根據指定的規則流程，驗證一個 C 檔案是否合格。
+
+    Args:
+        file_path (str): 要驗證的 .c 檔案路徑。
+
+    Returns:
+        bool: 如果檔案合格則返回 True，否則返回 False。
+    """
+    print(f"--- 開始分析檔案: {file_path} ---")
+
+    if not os.path.exists(file_path):
+        print(f"[錯誤] 檔案不存在: {file_path}")
+        return False
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"[錯誤] 無法讀取檔案: {e}")
+        return False
+
+    # 1. 找到 entry function
+    # 模式解釋: 尋找 "@command"，後面跟著一個或多個空白，然後捕獲一個由字母、數字、底線組成的字串
+    command_match = re.search(r'@command\s+([a-zA-Z0-9_]+)', content)
+    if not command_match:
+        print("[結果] 不合格：在註解中找不到 '@command' 標籤。")
+        return False
+    
+    entry_function_name = command_match.group(1)
+    print(f"1. 找到 Entry Function: '{entry_function_name}'")
+
+    # 尋找 entry function 的主體內容
+    entry_function_body = find_c_function_body(content, entry_function_name)
+    if not entry_function_body:
+        print(f"[結果] 不合格：在檔案中找不到 Entry Function '{entry_function_name}' 的定義。")
+        return False
+
+    # 2. 在 entry function 中逐一檢查每個 dRet = Function()
+    # 模式解釋: 尋找 "dRet"、任意空白、"="、任意空白，然後捕獲函式名稱，後面跟著 "("
+    dret_calls = re.findall(r'dRet\s*=\s*([a-zA-Z0-9_]+)\s*\(', entry_function_body)
+    
+    if not dret_calls:
+        print("[結果] 不合格：在 Entry Function 中找不到任何 'dRet = Function()' 形式的函式呼叫。")
+        return False
+
+    print(f"\n2. 在 '{entry_function_name}' 中找到以下函式呼叫: {dret_calls}")
+
+    for func_name in dret_calls:
+        print(f"\n--- 正在檢查函式: '{func_name}' ---")
+
+        # 檢查此函式是否定義於同一份文件中
+        target_function_body = find_c_function_body(content, func_name)
+        if not target_function_body:
+            print(f"  - 跳過：函式 '{func_name}' 未在此檔案中定義。")
+            continue
+        
+        print(f"  - 確認：函式 '{func_name}' 在此檔案中找到定義。")
+
+        # 3. 判斷函式中是否有呼叫 printTCFlowConsole() 且參數包含 "Step"
+        # 模式解釋: 尋找 "printTCFlowConsole("，接著是任意非 ')' 的字元，
+        # 其中必須包含 "Step" 這個字串，最後以 ")" 結尾。
+        # re.DOTALL 讓 '.' 可以匹配換行符，以處理跨行的參數。
+        step_check_match = re.search(r'printTCFlowConsole\s*\([^)]*"Step[^"]*', target_function_body, re.DOTALL)
+        if not step_check_match:
+            print("  - 3. 檢查失敗：函式中未找到包含 '\"Step\"' 字串的 printTCFlowConsole() 呼叫。")
+            continue
+        
+        print("  - 3. 檢查成功：找到包含 '\"Step\"' 字串的 printTCFlowConsole() 呼叫。")
+
+        # 4. 判斷是否出現 "if (dRet == FUN_ERROR)" 且內部有呼叫 printTestFailConsole()
+        # 我們先找到所有 'if (dRet == FUN_ERROR)' 的區塊
+        # 模式解釋: 尋找 'if'、任意空白、'(', 'dRet', '==', 'FUN_ERROR', ')'，最後是 '{'
+        error_if_pattern = re.compile(r'if\s*\(\s*dRet\s*==\s*FUN_ERROR\s*\)\s*\{')
+        
+        is_error_check_passed = False
+        for if_match in error_if_pattern.finditer(target_function_body):
+            # 找到 if 區塊的起始點
+            if_block_start = if_match.end()
+            
+            # 尋找與之匹配的 '}' 來取得完整的 if 區塊內容
+            brace_level = 1
+            for i in range(if_block_start, len(target_function_body)):
+                char = target_function_body[i]
+                if char == '{':
+                    brace_level += 1
+                elif char == '}':
+                    brace_level -= 1
+                
+                if brace_level == 0:
+                    if_block_content = target_function_body[if_block_start:i]
+                    # 在這個 if 區塊內尋找 printTestFailConsole()
+                    if 'printTestFailConsole' in if_block_content:
+                        is_error_check_passed = True
+                        break # 找到一個合格的就夠了
+            
+            if is_error_check_passed:
+                break # 跳出外層 for 迴圈
+
+        if is_error_check_passed:
+            print("  - 4. 檢查成功：在 'if (dRet == FUN_ERROR)' 區塊中找到了 printTestFailConsole() 呼叫。")
+            print(f"\n[最終結果] 合格：函式 '{func_name}' 滿足所有條件。")
+            return True
+        else:
+            print("  - 4. 檢查失敗：未在 'if (dRet == FUN_ERROR)' 區塊中找到 printTestFailConsole() 呼叫。")
+
+    # 5. 若全部搜尋完皆無合格 Function，則此 file 不合格
+    print("\n[最終結果] 不合格：所有被檢查的函式都未能滿足所有條件。")
+    return False
+
+if __name__ == "__main__":
+    # 使用方式: python c_validator.py <你的C檔案路徑>
+    # 例如: python c_validator.py test_qualified.c
+    if len(sys.argv) < 2:
+        print("請提供要檢查的 .c 檔案路徑。")
+        print("用法: python c_validator.py <file.c>")
+        sys.exit(1)
+        
+    c_file_path = sys.argv[1]
+    validate_c_file(c_file_path)
