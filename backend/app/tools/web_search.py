@@ -2,7 +2,6 @@
 import httpx
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
-SERPAPI_KEY = "2bc8a7241a4fd9aea8b963a22d1b419864dfaa5ac1b0a6b2107101d3275dc631"
 
 def web_search_summary(
     query: str,
@@ -53,4 +52,5 @@ def web_search_summary(
         ).replace("\n", " ").strip()[:240]
         if url:
             bullets.append(f"- [{title}]({url}) — {snippet}")
+
     return "\n".join(bullets)
