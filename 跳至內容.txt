@@ -1,0 +1,1367 @@
+跳至內容
+聊天歷程紀錄
+
+你說：
+My boss want me to survey how to build an ai agent on Microsoft Teams. That's, if I ask some tasks on Teams likes send the emay, it will act as an AI agent and call the tools behind the screen. Can you fist give me the possible sight? I have searched and found Teams AI Agent, Azure AI Agent Service but still confused. My company also has a local LLM model and we need to use such local model with given endpoint.
+ChatGPT 說：
+
+已思考 2 秒鐘
+Great question, and honestly… you're not the only one confused 😅
+Right now Microsoft is shipping like 3 overlapping "agent" stories: Teams AI Library / Microsoft 365 Agents Toolkit, Azure AI Agent Service, and now Agent Framework. I'll map the landscape for you, explain what problem each solves, and show how you'd plug in your own local LLM instead of OpenAI.
+
+We'll go in layers:
+
+0. The goal (what your boss wants)
+In Microsoft Teams, a user types:
+"Send an email to Alice saying I'll be late."
+→ The AI agent understands intent
+→ Calls internal tools (e.g. your internal email API / MS Graph)
+→ Executes the task
+→ Replies back in Teams with result
+
+So you need:
+
+A chat surface inside Teams
+
+An orchestrator that can interpret the request and decide which tool(s) to call
+
+Tool connectors (send email, book meeting, etc.) with security/governance
+
+Your own LLM endpoint — not Microsoft’s hosted model
+
+You can build that with 2 main approaches today:
+
+Option A. Teams-native bot using the Teams AI Library (Microsoft 365 Agents Toolkit)
+You write a bot (Node.js or Python) using the Teams AI Library.
+
+The bot runs wherever you deploy it (your infra, AKS, VM, container, etc.).
+
+The agent logic (intent → tool calls → response) lives in your code.
+
+That bot is installed as an app in Teams and users chat with it.
+
+You can point it at any LLM endpoint, including your private/local LLM. The docs explicitly say you can bring "your own model," not just Azure OpenAI. 
+learn.microsoft.com
+
+You define “actions”/“tools,” like sendEmail, and the library helps the LLM decide when/how to call them.
+
+Think of this as: You build the brain + tools yourself. Teams is just the UI.
+
+This is closest to what you described.
+
+Option B. Azure AI Foundry Agent Service (a managed agent runtime) + Teams as the front-end
+You build/host an "agent" in Azure AI Foundry Agent Service. That service handles: conversation state, tool invocation, safety, observability, etc. 
+learn.microsoft.com
+
+Then you expose that agent inside Teams (basically Teams becomes the chat client in front of the Azure agent). People are already experimenting with that pattern and wiring it through a Teams app / bot. 
+linkedin.com
+
+This path gives you production features like monitoring, policies, audit, RBAC, etc. "for free," but it wants you to live in Azure’s ecosystem.
+
+Think of this as: Azure runs the brain + orchestration. Teams is just a channel.
+
+This is more “enterprisey,” but has more Azure lock-in and it's still moving fast (naming is changing: “Azure AI Agent Service,” “AI Foundry Agent Service,” etc.). 
+learn.microsoft.com
+
+Now let's zoom into each option in more detail and talk specifically about:
+
+where the model sits
+
+how tool calls work
+
+how you'd ship this in your company
+
+Option A. Teams AI Library / Microsoft 365 Agents Toolkit path
+Core pieces
+Teams bot / agent app
+
+Built with the Teams AI Library (v2). This library is meant to simplify building "agents" for Teams. It wraps things like planning, memory, tool invocation, and adaptive cards. Microsoft positions it as the main pro-code toolkit for Teams AI agents. 
+learn.microsoft.com
+
+You scaffold this with the "Microsoft 365 Agents Toolkit" extension in VS Code (used to be called Teams Toolkit). It generates a working chat agent app. 
+learn.microsoft.com
+
+LLM connector
+
+By default, samples let you choose Azure OpenAI or OpenAI API. But this is just an abstraction: you provide something like model.generate(prompt) in code. You can replace that with your internal LLM endpoint.
+
+Practically: you write a small adapter class that calls POST http://your-llm-endpoint/... with prompt/history and returns text.
+
+That means you can use your local LLM as the reasoning model.
+
+Tools / "actions"
+
+You register callable functions — e.g. send_email, schedule_meeting, queryCRM, etc.
+
+The library lets the model decide when to call them; it handles "AI decides → code runs → result goes back into the conversation → final answer to user." This is the “agent” behavior they describe: understand user intention, select a sequence of actions, finish the task. 
+learn.microsoft.com
+
+This is where you hook internal systems, including Microsoft Graph (if you want to actually send Outlook email as the user) or totally private APIs.
+
+Memory / RAG (optional)
+
+There’s a built-in pattern for Retrieval-Augmented Generation (Chat With Your Data). It supports Azure AI Search, SharePoint, custom data sources, etc., and you can extend it with your own DataSource interface. 
+learn.microsoft.com
+
+So if your agent needs company policy or past ticket data to answer "please email Alice the escalation summary," you can feed it that.
+
+Deployment
+
+You run the bot backend somewhere reachable by Teams (often Azure Bot Service / HTTPS endpoint).
+
+You register that bot as a Teams app.
+
+Users in your org can now chat with it in Teams chat/channel/DM.
+
+Why you'd choose this path
+You want control.
+
+You already have (or must use) an internal LLM (compliance, data residency).
+
+You’re okay to implement some orchestration logic yourself.
+
+You don't absolutely need Azure AI Foundry features like built-in policy guardrails, thread persistence, analytics dashboards, etc.
+
+High-level architecture for you
+[Teams client UI]
+        ↓
+ [Your Teams Bot App / Agent App]
+   - Teams AI Library
+   - Tool registry (sendEmail, etc.)
+   - Adapter to call YOUR local LLM endpoint
+        ↓
+[Internal systems / MS Graph / Line-of-business APIs]
+Concretely:
+
+User says in Teams: "Send an email to Alice that I'm late."
+
+Teams forwards message to your bot.
+
+Your bot calls your local LLM: "User request: ... Tools available: sendEmail(to, subject, body)... decide plan."
+
+Model replies with: call sendEmail({to: 'Alice', body:'I will be late...'}).
+
+Your code executes that tool (maybe via Graph API to send Outlook mail on behalf of user).
+
+Bot replies to Teams: "Done. I emailed Alice."
+
+This fits your requirement exactly.
+
+Option B. Azure AI Foundry Agent Service path
+Core pieces
+Agent runtime in Azure AI Foundry Agent Service
+
+This is a managed agent runtime. It stores conversation "threads", routes tool calls, enforces content safety, and handles observability/compliance. 
+learn.microsoft.com
+
+It's positioned as production grade: identity integration, networking, policies, etc. (This matters if your boss cares about audit trails / SOC2 / etc.).
+
+Tools integration
+
+You register tools/functions (like code interpreter, custom business API, etc.) and the agent can call them. 
+learn.microsoft.com
+
+Microsoft is also rolling out a broader "Agent Framework" that unifies Semantic Kernel + AutoGen ideas into an orchestrator that can run locally and then be deployed into Azure with safety/observability. 
+azure.microsoft.com
+
+That framework supports connecting arbitrary APIs and even multi-agent workflows.
+
+LLM / model
+
+Out of the box, this service obviously loves Azure OpenAI or other Azure-hosted models.
+
+To use your own local LLM endpoint, you’d have to check:
+
+Can you register a custom model / external inference endpoint as the model backing the agent?
+
+Or do you "proxy" requests: let Foundry agent call a “tool” that actually forwards the prompt to your local LLM and returns the completion, basically treating your LLM as a tool.
+
+Today, most docs and samples assume Azure-hosted models. So using a strictly on-prem LLM is more work here than in Option A.
+
+Teams integration
+
+You still need a Teams bot/app that forwards chat to that Azure agent and pipes responses back. People have shown this pattern — basically Teams becomes a client to the Azure Agent. 
+linkedin.com
+
+So Teams is not “talking directly to your local service,” it’s talking to Azure Agent Service, which then calls tools.
+
+Why you'd pick this
+Compliance/governance/monitoring is a must-have requirement from leadership.
+
+You want to scale to many agents, reuse them across Teams, web, maybe Copilot surfaces later.
+
+You’re okay (politically and technically) with Azure being in the middle.
+
+Why you might not
+You’re forced to use strictly internal, no-external-cloud model inference.
+
+You want to move fast with simple code instead of onboarding a big Azure story.
+
+Where does the new "Microsoft Agent Framework" fit?
+Microsoft recently announced an "Agent Framework" (public preview ~Oct 2025). The idea is:
+
+Use one open-source SDK/runtime to build multi-agent systems locally, with tool calling, workflows, safety, etc.
+
+Then deploy that into Azure AI Foundry Agent Service for production governance and observability.
+
+And surface that agent in Microsoft 365 surfaces like Teams / Copilot. 
+azure.microsoft.com
++1
+
+So long-term, Microsoft wants one story:
+
+Dev Experience: Agent Framework (code-first, can run local, supports custom tools, supports Model Context Protocol/MCP to connect to arbitrary systems)
+
+Prod Runtime: Azure AI Foundry Agent Service
+
+Front Ends: Teams, Copilot, web apps, etc.
+
+This is basically Option B, but more polished and standardized, and likely the "future-proof" path.
+
+But today, if you need to deliver something soon, it's probably still Option A because it's more directly under your control and easier to point at your local LLM.
+
+Which one should YOU propose to your boss?
+Let's decision-matrix it:
+
+1. We MUST use our internal/local LLM endpoint (no Azure/OpenAI usage allowed for inference)
+→ Recommend Option A (Teams AI Library bot)
+Why:
+
+You can plug in your own LLM easily (custom adapter).
+
+All tokens stay on-prem if you host the bot inside your network/VNet and expose it to Teams via reverse proxy / Bot Service with private networking.
+
+You directly code the tool-calling logic.
+
+2. We ALSO need audit, governance, observability, RBAC, safety review, etc. for production rollout to whole company
+→ You can still start with Option A for POC, then say roadmap is:
+
+Move orchestration into Microsoft Agent Framework + Azure AI Foundry Agent Service (Option B) when security team is ready.
+
+Expose that agent in Teams.
+
+This matches Microsoft's long-term story and keeps management happy that you're aligned with roadmap.
+
+3. We are okay using Azure-hosted models (like Azure OpenAI)
+→ You could skip local LLM complexity and jump straight into Option B.
+
+Concrete next steps you can take right now (POC path)
+I'll assume you want Option A with your own LLM.
+
+Scaffold a Teams AI agent app
+
+Install "Microsoft 365 Agents Toolkit" (VS Code extension; formerly Teams Toolkit).
+
+Create new project → "Agent for Teams" / "Chat with your data" template. This gives you a working bot project with Teams AI Library, a bot endpoint, and Teams app manifest. 
+learn.microsoft.com
+
+Swap the LLM
+
+In the generated code you'll see something like an OpenAIModel or AzureOpenAIModel class.
+
+Create LocalLLMModel class that:
+
+sends {messages: [...]} to http://your-llm-endpoint/generate (whatever your inference API looks like),
+
+returns {text: "...response..."}.
+
+Inject that instead of the default model when initializing the AI agent in code.
+
+This satisfies "we must use internal LLM."
+
+Register tools
+
+Add a tool function, e.g. sendEmail(params) that calls either:
+
+Microsoft Graph API using the user’s identity (if you're allowed delegated send), or
+
+your company’s internal mail service API.
+
+Register that function with the Teams AI Library's tool/Action registry so the model can call it.
+
+Now your agent can actually DO things, not just chat.
+
+Test in Teams
+
+Run the bot locally (or in a container in your network).
+
+Use the provided local test harness ("Agents Playground" / "Teams App Test Tool") to simulate Teams chat. 
+learn.microsoft.com
+
+Then sideload the app manifest into your internal Teams tenant so you can DM it in real Teams.
+
+Security / compliance
+
+Add guardrails around what the model is allowed to do:
+
+Confirm actions before execution ("I’m about to send this email. OK?").
+
+Log tool calls.
+
+Restrict which email addresses it can send to at first (e.g. internal only).
+
+This is important because once you let an LLM call tools, you're basically giving it automation powers. Microsoft specifically calls out safety/governance as something their managed Foundry Agent Service tries to standardize. 
+learn.microsoft.com
+
+For POC, you implement basic manual confirmation.
+
+How to explain this to management in one slide
+You can literally say:
+
+Slide Title: "AI Agent in Teams – Architecture Proposal"
+
+User experience
+
+Employees ask the Agent in Teams: “Send status email to Alice”
+
+Agent confirms, sends email, and reports back
+
+Tech pieces
+
+Teams Chat Surface (Teams app / bot)
+
+AI Orchestrator (Teams AI Library agent service we host)
+
+Uses our internal LLM endpoint (no external data leaves our network)
+
+Detects intent, plans actions, calls tools
+
+Enterprise Tools
+
+Email / Calendar / Internal APIs exposed as controlled functions
+
+Roadmap
+
+Phase 1: Pilot (our self-hosted agent with Teams AI Library)
+
+Phase 2: Production hardening in Azure AI Foundry Agent Service for auditing, safety, and org-wide rollout
+
+That storyline matches Microsoft's docs AND respects your “must use local LLM” rule.
+
+TL;DR for you to tell your boss
+"Teams AI Agent" (Teams AI Library + Microsoft 365 Agents Toolkit) = build-your-own Teams bot with tool calling. Direct, fast, lets us plug in our internal LLM immediately. 
+learn.microsoft.com
++2
+learn.microsoft.com
++2
+
+"Azure AI Agent Service / AI Foundry Agent Service" = managed runtime for agents with governance, observability, policies, and multi-agent workflows. Strong for scale/compliance, expects Azure models by default, but can be fronted by Teams. 
+learn.microsoft.com
++2
+learn.microsoft.com
++2
+
+Recommended plan:
+
+We prototype using Teams AI Library and our local LLM + custom tools (send email, etc.).
+
+Later, if we need enterprise governance/audit, we can migrate the orchestration into Azure AI Foundry Agent Service / Microsoft Agent Framework and still surface it in Teams.
+
+If you want, I can draft that Phase 1 architecture diagram (components + auth flow + where your LLM sits) next.
+
+你說：
+Still confuse. What is the main diffent? Can you show me both command flow? What happened when the user ask questions until he get the answer 
+ChatGPT 說：
+Love this question. Let's make it crystal.
+
+We'll compare the TWO worlds:
+
+Option A: Teams AI Library bot (you host it)
+
+Option B: Azure AI Agent Service (Azure hosts the agent runtime)
+
+We’ll walk through the same user request:
+
+"Send an email to Alice saying I'll be late today."
+
+For each option:
+
+Who talks to who
+
+Where the LLM runs
+
+Where tool calls happen
+
+Where memory / policy lives
+
+Then I’ll summarize the key differences.
+
+Option A: Teams AI Library bot (self-hosted agent logic)
+This is the "we build a Teams bot and run it ourselves" model.
+
+Step-by-step flow
+User in Teams
+
+User types: "Send an email to Alice saying I'll be late today."
+
+Teams → Your Bot
+
+Teams sends that message to your bot's HTTPS endpoint (this is a normal Teams bot, registered in Azure Bot Framework / Teams app manifest).
+
+Your Bot → Your LLM
+
+Your code (using Teams AI Library) builds a prompt like:
+
+user message
+
+conversation history
+
+list of available tools (like sendEmail(to, body))
+
+It sends that to your internal LLM endpoint (not Azure, your company model).
+
+LLM → Bot (Plan / Tool call decision)
+
+The LLM responds with:
+
+intent: "send email"
+
+parameters: {to: "Alice", body: "I'll be late today."}
+
+In Teams AI Library terms, this is the "action plan" / "tool call".
+
+Bot executes tool(s)
+
+Your bot code calls your email API / Microsoft Graph to actually send the email.
+
+This part is pure code. You fully control it.
+
+Bot → Teams
+
+Bot replies in Teams:
+"✅ Email sent to Alice: 'I'll be late today.'"
+
+Sequence diagram style
+[User Teams Chat]
+   |
+   | "Send an email to Alice..."
+   v
+[Teams Service]
+   |
+   | forwards message (webhook)
+   v
+[Your Bot (Teams AI Library)]
+   |
+   | prompt + tools context
+   v
+[Your Local LLM Endpoint]
+   |
+   | returns: call sendEmail({to:"Alice", body:"I'm late"})
+   v
+[Your Bot]
+   |
+   | calls internal Email API / Graph
+   v
+[Email System]
+   |
+   | success
+   v
+[Your Bot]
+   |
+   | "Email sent ✅"
+   v
+[Teams → User]
+What lives where in Option A
+LLM reasoning: Your infra (your local LLM)
+
+Orchestration / Tool calling logic: Your bot code
+
+Memory / guardrails: You write it (you can add confirmation prompts, logging, etc.)
+
+Teams integration: Direct, you're already in Teams as a bot
+
+This option = you are the brain + hands. Microsoft is just the chat UI.
+
+Option B: Azure AI Agent Service (managed agent runtime)
+This is the "we deploy an agent in Azure, and Teams is just a front-end client" model.
+
+Step-by-step flow
+User in Teams
+
+User types: "Send an email to Alice saying I'll be late today."
+
+Teams → Thin Connector Bot
+
+Teams sends that message to a lightweight bot you own.
+
+This bot does almost NO reasoning. It just forwards the message to Azure AI Agent Service.
+
+Connector Bot → Azure AI Agent Service
+
+The connector bot calls your Agent in Azure AI Agent Service (or Agent Framework runtime hosted in Azure).
+
+It passes:
+
+user message
+
+user identity / context
+
+maybe conversation thread ID
+
+Azure Agent talks to an LLM
+
+The agent runtime in Azure:
+
+chooses which model to call
+
+maintains conversation state
+
+runs safety filters / policies
+
+decides which tool(s) to call
+
+Normally the LLM here is Azure OpenAI or another Azure model.
+
+⚠ If you MUST use your internal LLM, you have 2 patterns:
+
+(nice path) If Agent Service eventually supports custom inference endpoints as a model provider, use that.
+
+(hacky path) Register a “tool” like customReasoner(prompt) that literally forwards to your internal LLM and returns a plan. So your local LLM becomes a tool the agent calls.
+
+Azure Agent → Tools
+
+The Azure Agent runtime now calls a registered tool like sendEmail.
+
+That tool could be:
+
+A function that calls Microsoft Graph to send Outlook mail as the user
+
+A secured internal API you expose to Azure
+
+Azure does the orchestration, not your bot.
+
+Azure Agent → Connector Bot
+
+Azure Agent produces final response: "Email sent to Alice."
+
+Connector Bot → Teams
+
+That response is sent back to Teams so the user sees it.
+
+Sequence diagram style
+[User Teams Chat]
+   |
+   | "Send an email to Alice..."
+   v
+[Teams Service]
+   |
+   | forwards msg
+   v
+[Thin Teams Bot (connector)]
+   |
+   | forwards msg + context
+   v
+[Azure AI Agent Service]
+   |
+   | (plans w/ its orchestrator + LLM)
+   | decides: call sendEmail()
+   v
+[Tool: sendEmail()]
+   |
+   | calls MS Graph / internal email API
+   v
+[Email System]
+   |
+   | success
+   v
+[Azure AI Agent Service]
+   |
+   | "Email sent ✅"
+   v
+[Thin Teams Bot]
+   |
+   | final answer
+   v
+[Teams → User]
+What lives where in Option B
+LLM reasoning: Azure (unless you force it through a custom tool workaround)
+
+Orchestration / Tool calling logic: Azure AI Agent Service
+
+Memory / guardrails / audit logs: Azure AI Agent Service
+
+Teams integration: Your bot becomes mostly a pass-through front end
+
+This option = Microsoft (Azure) is the brain + hands, you are mostly the adapter.
+
+Direct head-to-head differences
+1. Who is "the agent"?
+Option A (Teams AI Library):
+Your code IS the agent.
+
+Option B (Azure Agent Service):
+Azure is the agent. Your bot just relays.
+
+2. Where does the LLM actually run?
+Option A:
+Your internal LLM endpoint. Easy to swap in.
+
+Option B:
+By default, Azure’s managed models.
+Using your own on-prem LLM requires bending the system (treating your model as an external tool or waiting for official external-model support).
+
+If your company is strict: “We cannot send prompts to outside cloud,” Option B becomes politically harder unless your Azure environment is considered allowed/internal.
+
+3. Where are the tools executed?
+Option A:
+Your bot calls tools directly in code. You write the logic.
+
+Option B:
+You register tools with Azure Agent Service. Azure calls them. The logic of “when to call which tool” lives in Azure.
+
+4. Who owns security / auditability / compliance?
+Option A:
+You log everything yourself. You build approvals ("Are you sure you want to email the VP?").
+
+Option B:
+Azure AI Agent Service is built for enterprise rollout: policy layers, activity tracking, RBAC, content filters, etc., come from Azure’s side. This is what leadership/security teams like.
+
+5. How fast can you POC?
+Option A:
+Fast. You can hack a working prototype with your local LLM in a dev environment and test it in Teams.
+
+Option B:
+Slower first step. You need Azure setup, agent definition, tool registration, identity wiring, then the Teams connector.
+
+6. How future-aligned with Microsoft's roadmap?
+Short term: Option A (Teams AI Library) is battle-tested for "a bot in Teams that can call functions."
+
+Mid / Long term: Microsoft is clearly pushing toward “Agent Framework + Azure AI Agent Service + surface it in Teams/Copilot.” That’s Option B’s world.
+
+You can sell this internally as:
+
+"We'll start with A to prove value quickly using our local LLM and our internal email API."
+
+"Then we can graduate to B if security / audit / scale become big requirements. B is the enterprise landing zone."
+
+Summary in one sentence each
+Option A: Teams AI Library bot
+
+Teams → Your bot → Your LLM → Your code calls tools → reply
+
+You control everything, easy to use your local LLM, light governance.
+
+Option B: Azure AI Agent Service
+
+Teams → Thin connector → Azure Agent (LLM+orchestrator+policy) → Azure calls tools → reply
+
+Azure controls reasoning, tool calling, memory, auditing; governance is built-in but using only-internal LLM is trickier.
+
+If you want, I can do two code-ish skeletons next:
+
+Pseudocode for Option A handleMessage() (call local LLM, run tool)
+
+Pseudocode for Option B connector (forward to Azure Agent Service, return answer)
+
+That usually helps leadership and infra teams understand ownership lines.
+
+你說：
+So in optionA, I need to write the AI agent myself? Does Teams AI library support any convenient form? Like how to finish such.send email agent tool?
+ChatGPT 說：
+Awesome, you're asking exactly the right thing 👌
+
+Short answer:
+
+Yes, in Option A you are building the agent logic yourself.
+
+BUT: Teams AI Library gives you a lot of scaffolding so you’re not starting from zero. You don’t have to hand-write the planner, argument parser, tool routing, etc.
+
+You mainly provide:
+
+a model adapter (your local LLM),
+
+a list of tools (functions),
+
+the actual code for each tool (like sendEmail()).
+
+Let’s walk through what “you build it yourself” really means, and then I’ll show you what an email tool looks like in practice.
+
+What Teams AI Library gives you for free
+Think of the Teams AI Library as:
+
+a bot framework for Teams
+
+plus an “agent runtime” that already knows:
+
+how to keep chat history
+
+how to talk to an LLM
+
+how to ask the LLM “what should I do next?”
+
+how to parse “call tool X with these params”
+
+how to invoke that tool function in your code
+
+how to send the final answer back to the user
+
+So you are NOT writing:
+
+intent classification
+
+if/else "if message contains 'email' then..."
+
+tool dispatcher
+
+Teams message plumbing
+
+Those parts are built in.
+
+You are writing:
+
+what tools exist and what each tool actually does in your environment
+
+how to talk to your own LLM endpoint instead of OpenAI/Azure OpenAI
+
+any guardrails/permissions
+
+That’s why Option A is fast to prototype.
+
+Conceptual structure in Option A
+You’ll typically have code shaped like this (in Node.js / TypeScript style):
+
+Create the agent:
+
+Give it an LLM
+
+Give it a list of tools it’s allowed to use
+
+Define each tool with:
+
+name
+
+description (so the LLM knows when to use it)
+
+parameters schema (so the LLM knows what arguments to provide)
+
+implementation (your code)
+
+Run: when a Teams user sends a message, the library:
+
+builds prompt for the LLM
+
+asks the LLM “what next?”
+
+if the LLM responds “call tool sendEmail with {to:..., subject:..., body:...}”
+
+the library calls your sendEmail function with those params
+
+then returns the final answer back to Teams
+
+Let’s make that more concrete.
+
+1. Your model adapter (your local LLM)
+Teams AI Library usually expects something like model.complete(messages) or model.generate(input).
+
+You write a thin adapter around your internal LLM endpoint:
+
+class LocalLLMModel {
+  async generate(systemPrompt: string, messages: { role: string; content: string }[]) {
+    // You call your company's internal inference server here.
+    // This is pseudocode.
+    const response = await fetch("http://internal-llm.company.local/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer INTERNAL_TOKEN" },
+      body: JSON.stringify({
+        system: systemPrompt,
+        messages: messages,
+        // maybe temperature, max_tokens, etc.
+      })
+    });
+
+    const data = await response.json();
+    return data.text; // <- the LLM's answer as plain text
+  }
+}
+You then hand this model instance to the agent instead of using Azure OpenAI.
+
+This is where you enforce “no data leaves our network.”
+
+2. Define the sendEmail tool
+Now, this is the meat of your question:
+
+“Like how to finish such ‘send email agent tool’?”
+
+You declare a tool so the LLM can call it. You give it:
+
+human description → tells the LLM when it's appropriate to use
+
+parameter schema → tells the LLM how to call it
+
+execute() → your real code
+
+Example:
+
+const sendEmailTool = {
+  name: "sendEmail",
+  description: "Send an email on behalf of the current user using the corporate email system.",
+  parameters: {
+    type: "object",
+    properties: {
+      to: {
+        type: "string",
+        description: "The recipient's email address. Must be a valid internal address."
+      },
+      subject: {
+        type: "string",
+        description: "Short subject line for the email."
+      },
+      body: {
+        type: "string",
+        description: "The body content of the email in plain text."
+      }
+    },
+    required: ["to", "body"]
+  },
+
+  // This runs in your infra, NOT by the LLM.
+  // You control auth here.
+  execute: async (args: { to: string; subject?: string; body: string }, context: AgentRuntimeContext) => {
+    // 1. Security check (optional but smart)
+    if (!args.to.endsWith("@yourcompany.com")) {
+      throw new Error("Refusing to send to external address.");
+    }
+
+    // 2. Actually send email: could be Microsoft Graph, Exchange API, or internal mail microservice.
+    // Example using a hypothetical internal email microservice:
+    const result = await fetch("https://internal-mail-service/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // attach user identity: maybe JWT for the signed-in Teams user
+        "X-User-Id": context.userId
+      },
+      body: JSON.stringify({
+        to: args.to,
+        subject: args.subject ?? "(no subject)",
+        body: args.body
+      })
+    });
+
+    if (!result.ok) {
+      throw new Error("Mail service failed");
+    }
+
+    // 3. Return something the LLM can summarize back to user
+    return {
+      status: "sent",
+      to: args.to,
+      subject: args.subject ?? "(no subject)"
+    };
+  }
+};
+Key points:
+
+description and parameters are critical. They’re used to prompt the LLM so it knows how to call the tool.
+
+execute is the real action. You can hit Microsoft Graph here if you're allowed to send Outlook mail as the signed-in user. Or your own SMTP/mailer service.
+
+3. Register the tool with the agent
+Then in your agent setup:
+
+const model = new LocalLLMModel();
+
+const agent = new TeamsAIAgent({
+  model,
+  tools: [sendEmailTool],
+  systemPrompt: `
+You are an assistant that helps employees perform tasks.
+Always confirm before sending real emails.
+After executing a tool, summarize the result for the user.
+`
+});
+(Names like TeamsAIAgent vary depending on the version of the Teams AI Library / Agents Toolkit template, but structurally it's like this.)
+
+Now the agent “knows”:
+
+I can call sendEmail
+
+Here's what args it needs
+
+Here’s my job / persona (systemPrompt)
+
+4. Handling a real user message
+When the Teams message comes in, your message handler looks roughly like:
+
+teamsApp.onMessage(async (teamsMessage, turnContext) => {
+  const userText = teamsMessage.text;
+  const userId   = teamsMessage.from?.id;
+
+  // Ask the agent to respond. The agent will:
+  // 1. Call your LocalLLMModel.generate(...)
+  // 2. Possibly decide to invoke sendEmailTool.execute(...)
+  // 3. Produce a final message for the user
+  const responseText = await agent.runTurn({
+    userText,
+    userId,
+    conversationId: turnContext.conversation.id
+  });
+
+  await turnContext.sendActivity(responseText);
+});
+So if user says:
+
+"Send an email to alice@yourcompany.com saying I'll be late to the 10am sync. Subject: 'Running late'"
+
+The flow is:
+
+We call agent.runTurn(...).
+
+Agent builds a prompt for the LLM, including tool definitions.
+
+LLM responds: “Call sendEmail with {to:'alice@yourcompany.com', subject:'Running late', body:'I will be late to the 10am sync'}”
+
+Agent automatically calls sendEmailTool.execute(...) with those args.
+
+execute hits your mail service, gets {status:'sent', ...} back.
+
+Agent feeds that result back into the LLM to generate a nice human message like:
+
+"Done. I sent 'Running late' to alice@yourcompany.com."
+
+You send that back into Teams.
+
+You did not write the planner. You just wrote the tool and wired your LLM.
+
+So… do you “need to write the AI agent yourself”?
+Let’s be super direct:
+
+You DO need to:
+Provide an LLM adapter (a tiny wrapper around your company model’s HTTP API).
+
+Define each tool (name, params, description, execute()).
+
+Do permission checks and business logic in those tools.
+
+Add guardrails like “ask user to confirm before sending.”
+
+You DO NOT need to:
+Parse natural language into intents by hand.
+
+Write if/else trees for every command.
+
+Manually stitch "tool output → final message".
+
+Manually deal with Teams channel plumbing at low level (the toolkit scaffolds that).
+
+In other words, you’re building Lego bricks (tools + model adapter), not pouring concrete.
+
+One last thing your security team will ask
+Because tools can actually do stuff, you almost always add a confirm step, like:
+
+First turn:
+
+User: "Email Alice I'm late."
+
+Agent: "I'll send: 'I'm late to the meeting today.' to alice@yourcompany.com. Send it?"
+
+User: "Yes"
+
+Agent actually calls sendEmail.
+
+You can enforce that in your systemPrompt or wrap the tool so it refuses to send unless there's an explicit confirmation flag in context.
+
+TL;DR
+Option A is “our bot, our rules.”
+
+Teams AI Library is not just a chat SDK — it already handles planning, tool calling, and reply formatting.
+
+You mainly plug in:
+
+Your LLM adapter
+
+Your tools (like sendEmail)
+
+Your safety checks
+
+So yes, it's buildable, and no, you don't have to reinvent all the agent logic from scratch.
+
+Next, if you want, I can sketch how Outlook/Graph email sending would look (with delegated user identity) vs calling an internal SMTP/microservice, so you have something to show IT/security.
+
+你說：
+Oh, so the logic of send email function like connecting to smtp server and attach MIMEText are what I need to write?
+ChatGPT 說：
+Exactly 👍 — that’s the idea.
+
+The Teams AI Library (Option A) gives you the agent orchestration, but when it comes to actually performing the action, you decide how the tool behaves.
+
+So for a sendEmail tool, yes — you must implement the underlying delivery logic, and you have three main choices:
+
+🧩 1. Use an internal SMTP connection (classic way)
+If your company already has an internal mail server and you can send programmatically:
+
+import smtplib
+from email.mime.text import MIMEText
+
+def send_email(to, subject, body):
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = "bot@yourcompany.com"
+    msg["To"] = to
+
+    with smtplib.SMTP("smtp.yourcompany.local", 587) as server:
+        server.login("bot@yourcompany.com", "PASSWORD")
+        server.send_message(msg)
+Then your sendEmailTool.execute() (in the Teams agent code) just calls this helper.
+
+✅ Full control
+❌ You handle credentials, throttling, logging, and security yourself
+
+🧩 2. Use an internal REST microservice (recommended for enterprises)
+Many companies expose an internal API for outbound email (so no direct SMTP in the agent).
+Your tool could just:
+
+await fetch("https://internal-mail-service/send", {
+  method: "POST",
+  headers: { "Authorization": `Bearer ${context.userToken}` },
+  body: JSON.stringify({ to, subject, body })
+})
+✅ No SMTP complexity
+✅ Works nicely inside corporate VNet
+❌ Needs that API to exist (or you create one)
+
+🧩 3. Use Microsoft Graph (if using Exchange/Outlook)
+If you’re in Microsoft 365, you can send email as the signed-in Teams user through the Microsoft Graph API.
+
+The flow is:
+
+The Teams bot already runs with an Azure AD app registration.
+
+You request delegated permission Mail.Send.
+
+Your tool executes:
+
+await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${userAccessToken}`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    message: {
+      subject,
+      body: { contentType: "Text", content: body },
+      toRecipients: [{ emailAddress: { address: to } }]
+    },
+    saveToSentItems: true
+  })
+});
+✅ Fully secure, audited, respects Outlook policies
+❌ Requires Azure AD + Graph setup and delegated token flow
+
+🧠 Summary
+Approach	Typical Use	Pros	Cons
+SMTP	Simple POC	Direct control	Manage creds & security
+Internal REST API	Enterprise infra	Clean abstraction	Need API service
+Microsoft Graph	Microsoft 365 org	Secure, user-delegated	Azure AD setup required
+So yes — you’re responsible for the logic that actually “does” the task, but you can choose the implementation that fits your infra.
+The Teams AI Library just calls your tool; it doesn’t care how you send the email.
+
+Would you like me to show an example of how the sendEmailTool could call Microsoft Graph (with authentication flow)? That’s usually the cleanest production approach in M365 environments.
+
+你說：
+Ok, let's begin to use auch Teams AI library to build the bot. Can you first tell me how to connect my Teams to the bot and the llm end point? Start from the basic.
+ChatGPT 說：
+
+已思考幾秒鐘
+Perfect. Let's start from zero and wire this up the way you would actually build it.
+
+We'll do two things right now:
+
+How Teams talks to your bot (the Teams connection)
+
+How your bot talks to your LLM endpoint (the model connection)
+
+I'll keep this very practical and map which step is “Microsoft-side setup” vs “your code”.
+
+Overview Picture
+At runtime it looks like this:
+
+[User in Teams]  <--chat-->  [Your Bot Service]  <--HTTP-->  [Your LLM endpoint]
+
+                                    \
+                                     \--(optional tools)--> [Email API / etc.]
+So you need:
+
+a Teams app/bot (so that Teams can DM it),
+
+a running web service that receives messages,
+
+code in that service that calls your LLM.
+
+The good news: Microsoft gives you scaffolding using Microsoft 365 Agents Toolkit (formerly Teams Toolkit) and Teams AI Library so you don't start from blank. 
+learn.microsoft.com
++2
+learn.microsoft.com
++2
+
+Let’s go step by step.
+
+Step 1. Scaffold the project (this creates the bot + Teams config for you)
+What you do:
+
+Open VS Code.
+
+Install the “Microsoft 365 Agents Toolkit” extension. (This is the official extension for building Teams AI agents / bots.) 
+learn.microsoft.com
++2
+learn.microsoft.com
++2
+
+In the left sidebar, click the Agents Toolkit icon → “Create a New Agent/App”.
+
+Choose Agent for Teams (or "Custom Engine Agent" / "Basic custom engine agent" depending on template wording). This gives you:
+
+A Node.js bot using Teams AI Library.
+
+A local dev/debug setup.
+
+A Teams app manifest (appPackage/manifest.json etc.).
+
+Env files in env/ where you normally put Azure OpenAI keys — we are going to swap that later with your internal LLM. 
+learn.microsoft.com
+
+Choose JavaScript or TypeScript. (I’ll assume JS/TS since you're strong in JS.)
+
+After this step you already have:
+
+src/index.(js|ts) → starts an HTTP server (Express / Restify style) and wires a Bot Framework adapter.
+
+src/app.(js|ts) → where incoming Teams messages get handled.
+
+src/prompts/... → system prompt templates for the agent.
+
+m365agents.*.yml → the toolkit's config files for running locally / in playground.
+
+appPackage/manifest.json → the Teams app manifest. This is how Teams knows “this bot exists”.
+
+This is the “Teams side connection” mostly done for you. 💡
+
+Step 2. Run and test locally (without publishing to real Teams yet)
+Why this matters: you can hit it in the “Agents Playground” before you even register a bot in your tenant. The toolkit gives you a local test harness that pretends to be Teams. 
+learn.microsoft.com
++2
+learn.microsoft.com
++2
+
+You press F5 / Debug “Microsoft 365 Agents Playground (Preview)”, and it:
+
+launches your bot locally,
+
+opens a local web UI chat window,
+
+simulates how Teams would talk to your bot.
+
+So before IT gives you any approval, you can already verify:
+
+“When I send a message, my code runs.”
+
+“My code can call my LLM.”
+
+Now let's wire in the LLM.
+
+Step 3. Connect the bot code to your LLM endpoint
+By default, the scaffold assumes Azure OpenAI or OpenAI API. You’ll see code like “OpenAIModel” or config like AZURE_OPENAI_ENDPOINT in env/.env.playground.user. 
+learn.microsoft.com
++1
+
+We’re going to replace that with your internal model.
+
+3.1 Create a model adapter
+In src/, add something like localModel.js:
+
+// localModel.js
+export class LocalLLMModel {
+  constructor(config) {
+    this.endpoint = config.endpoint;         // e.g. http://llm.internal.company/v1/generate
+    this.apiKey = config.apiKey;             // if you need auth, or maybe mTLS instead
+  }
+
+  /**
+   * Teams AI Library will call something like model.generate(systemPrompt, messages)
+   * or similar depending on version. We'll match that shape.
+   */
+  async generate(systemPrompt, messages) {
+    // messages is usually array like:
+    // [ { role: "system", content: "..." }, { role: "user", content: "..." }, ... ]
+
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${this.apiKey}`
+      },
+      body: JSON.stringify({
+        system: systemPrompt,
+        messages,
+        temperature: 0.7,
+        max_tokens: 512
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`LLM error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Your internal LLM should return generated text.
+    // We'll assume it returns { text: "final answer here" }
+    return data.text;
+  }
+}
+You control how to talk to your LLM: maybe it’s OpenAI-compatible (/v1/chat/completions), maybe it's vLLM custom, etc.
+This adapter is the ONLY place you touch that detail. Everything else just calls model.generate(...).
+
+3.2 Plug this model into the agent runtime
+In the scaffold you’ll see something where they construct the AI system / planner. It looks roughly like:
+
+// pseudo inside src/app.js or similar
+import { Application } from "@microsoft/teams-ai";
+// (in scaffold they might import OpenAIModel or AzureOpenAIModel)
+import { LocalLLMModel } from "./localModel.js";
+
+const model = new LocalLLMModel({
+  endpoint: process.env.LOCAL_LLM_ENDPOINT,
+  apiKey: process.env.LOCAL_LLM_KEY
+});
+
+// 'app' is the Teams AI Library app/agent runtime
+const app = new Application({
+  // ...
+  ai: {
+    model,          // <- swap in our model instead of AzureOpenAIModel
+    // planner, prompts etc. are already created by scaffold
+  }
+});
+
+export default app;
+Now the AI “brain” is your internal LLM, not Azure.
+
+At this point:
+
+You’ve connected Teams-side (via toolkit scaffold).
+
+You’ve connected LLM-side (via adapter).
+
+And you can test locally in the Playground.
+
+Step 4. Add tools/actions (later, like sendEmail)
+We won't fully build tools yet, but here’s where they go.
+
+Teams AI Library has the idea of “actions” (a.k.a. tools). An action is just a function you register with a name, schema, and implementation. The planner can choose to call it. 
+learn.microsoft.com
++1
+
+You’ll do something like:
+
+app.ai.actions.register({
+  name: "sendEmail",
+  description: "Send an email on behalf of the current user.",
+  parameters: {
+    type: "object",
+    properties: {
+      to: { type: "string", description: "Recipient email" },
+      subject: { type: "string", description: "Email subject" },
+      body: { type: "string", description: "Plain text body" }
+    },
+    required: ["to", "body"]
+  },
+  handler: async (args, state, context) => {
+    // <-- HERE is where you either:
+    // 1. call internal SMTP helper
+    // 2. call internal email microservice
+    // 3. call Microsoft Graph with user's token
+    //
+    // For now, just fake it:
+    console.log("Pretend sending email:", args);
+
+    return {
+      status: "sent",
+      to: args.to,
+      subject: args.subject ?? "(no subject)"
+    };
+  }
+});
+That registration tells the planner:
+“I have a capability called sendEmail. If the user asks something where this applies, you’re allowed to call it.”
+
+We'll wire this for real later, but the important thing now: your bot is the one that owns tool logic.
+
+Step 5. Connect to real Teams (so other people in the company can chat with it)
+After local testing in Playground, you eventually want actual Teams chat. High level:
+
+Register the app/bot in your Microsoft 365 tenant
+
+The toolkit can generate the app manifest (appPackage/) with bot endpoints, permissions, etc.
+
+For real Teams, your bot endpoint must be reachable from the internet or from your corporate network via some approved tunnel. In production most people host the bot in Azure App Service / container / AKS with HTTPS.
+
+Upload (sideload) the app into Teams
+
+In Teams (dev/tenant that allows custom apps), you upload the .zip manifest that the toolkit generated.
+
+Now the bot shows up in Teams just like any other chatbot: you can @mention it or open a 1:1 chat.
+
+Message flow in production
+
+User sends message in Teams
+
+Teams cloud calls your bot’s /api/messages endpoint (the Node.js server from src/index.js)
+
+Your bot calls your LLM
+
+Your bot replies → Teams displays it to the user
+
+This step (tenant registration + hosting endpoint) is mostly IT / infra / Azure AD admin work, but architecturally it's straightforward and very standard for Teams bots.
+
+Recap in plain language
+What you already get from the scaffold:
+A working Teams bot server
+
+Local “Playground” simulator so you can test chat without deploying to real Teams
+
+Prompt planning / tool orchestration handled by Teams AI Library
+
+A Teams app manifest ready to sideload into Teams
+
+What you have to add:
+LLM adapter
+
+Tiny JS file that knows how to call your internal LLM endpoint.
+
+You inject that instead of Azure OpenAI.
+
+Tool implementations
+
+e.g. sendEmail, which could call SMTP, Microsoft Graph, or internal mail API.
+
+You write the logic because only you know how your company wants to actually send mail and enforce policy.
+
+Deployment
+
+Host your bot endpoint somewhere IT approves.
+
+Register/sideload the app manifest so Teams can talk to it.
+
+What you can tell your boss right now
+“Step 1, we scaffold a Teams agent project with Microsoft 365 Agents Toolkit in VS Code. That gives us a Teams-ready bot, plus a local playground so we can test conversation before we even register in the tenant.
+Step 2, we swap the default model with our internal LLM by adding a small adapter (basically one file that POSTs to our LLM endpoint).
+Step 3, we define actions like sendEmail. Each action is just a function we write; the library will automatically let the AI call it.
+Step 4, when we’re happy, we host the bot (e.g. container in Azure or on-prem with reverse proxy), upload the Teams app manifest, and people in Teams can chat with it.”
+
+That’s the “basic” from scratch.
+
+What I can give you next
+If you're good so far, next I can draft:
+
+Concrete project structure (src/index.ts, src/app.ts, localModel.ts) so you see where to paste code.
+
+How auth would work if you want to send email as the user via Microsoft Graph (so the agent doesn't impersonate without permission).
+
+Which one do you want first?
+
+
+
+未選擇任何檔案未選擇任何檔案
+ChatGPT 可能會出錯。請查核重要資訊。
