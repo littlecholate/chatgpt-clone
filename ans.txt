@@ -247,4 +247,137 @@ Webhook 方案 (方案一)：程式碼更簡單 (SDK 處理掉很多事)，即�
 
 Polling 方案 (方案二)：程式碼較多 (您要自己處理 Auth、Polling 邏輯、防呆)，有延遲，但架設完全不需公開 URL 或 ngrok。它的最大門檻是「API 權限的管理員同意」。
 
+
 您可以根據您較容易取得的權限（Azure Bot 服務 vs Graph API 管理員同意）來決定要先測試哪一個。
+
+
+
+
+
+
+
+require('dotenv').config();
+const msal = require('@azure/msal-node');
+const axios = require('axios');
+
+// 1. 從 .env 讀取設定
+const {
+    CLIENT_ID,
+    CLIENT_SECRET,
+    TENANT_ID,
+    CHAT_ID,
+    POLL_INTERVAL_MS
+} = process.env;
+
+// 檢查關鍵環境變數
+if (!CLIENT_ID || !CLIENT_SECRET || !TENANT_ID || !CHAT_ID) {
+    console.error("錯誤：.env 檔案中的 CLIENT_ID, CLIENT_SECRET, TENANT_ID 或 CHAT_ID 缺少設定。");
+    process.exit(1); // 缺少設定則直接停止
+}
+
+const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}`;
+const GRAPH_ENDPOINT = 'https://graph.microsoft.com/v1.0';
+
+// 2. MSAL (驗證) 設定
+const msalConfig = {
+    auth: {
+        clientId: CLIENT_ID,
+        authority: AUTHORITY,
+        clientSecret: CLIENT_SECRET,
+    },
+};
+const cca = new msal.ConfidentialClientApplication(msalConfig);
+
+// 3. 取得 Graph API Access Token 的輔助函式
+async function getGraphToken() {
+    try {
+        const response = await cca.acquireTokenByClientCredential({
+            scopes: ['https://graph.microsoft.com/.default'],
+        });
+        return response.accessToken;
+    } catch (error) {
+        console.error("取得 Token 失敗，詳細錯誤:", error);
+        return null;
+    }
+}
+
+// 4. 變數：儲存最後處理的訊息 ID
+let lastProcessedMessageId = null;
+
+// 5. 核心：輪詢函式
+async function pollMessages() {
+    const token = await getGraphToken();
+    if (!token) {
+        console.log("[Polling] 無法取得 Token，5秒後重試...");
+        return;
+    }
+
+    try {
+        // 抓取聊天室的最新一則訊息
+        const url = `${GRAPH_ENDPOINT}/chats/${CHAT_ID}/messages?$orderby=createdDateTime desc&$top=1`;
+        const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` }});
+
+        const messages = response.data.value;
+        if (!messages || messages.length === 0) {
+            return; // 聊天室為空
+        }
+
+        const latestMessage = messages[0];
+        const messageId = latestMessage.id;
+        
+        // 檢查1: 這則訊息是否處理過了？
+        if (messageId === lastProcessedMessageId) {
+            // console.log("[Polling] 沒有新訊息...");
+            return; 
+        }
+        
+        // *** [已修正的邏輯] ***
+        // 檢查2: 這則訊息是不是 Bot 自己(Application)發的？
+        const sender = latestMessage.from;
+        let isFromMyBot = false;
+        
+        if (sender && sender.application) {
+            // 如果 sender.application 存在，代表是 App 發的
+            // 檢查 App ID 是否為我們自己的 CLIENT_ID
+            if (sender.application.id === CLIENT_ID) {
+                isFromMyBot = true;
+            }
+        }
+        
+        if (isFromMyBot) {
+            console.log("[Polling] 忽略自己(Application)發送的訊息...");
+            lastProcessedMessageId = messageId; // 仍然要更新 ID
+            return;
+        }
+
+        // --- 您的 MVP 需求：僅 Print ---
+        // 移除 HTML 標籤 (Teams 訊息內容是 HTML)
+        const messageContent = (latestMessage.body.content || '').replace(/<[^]*>?/gm, '').trim();
+        const senderName = (latestMessage.from && latestMessage.from.user) ? latestMessage.from.user.displayName : '未知使用者';
+        
+        console.log('--- [Polling] 偵測到新訊息 ---');
+        console.log(`使用者: ${senderName}`);
+        console.log(`訊息: ${messageContent}`);
+        console.log('--------------------------------');
+
+        // 更新最後處理的 ID
+        lastProcessedMessageId = messageId;
+
+    } catch (error) {
+        // 如果錯誤是 401 (Unauthorized)，可能是 Token 過期 (雖然 msal 會自動處理，但以防萬一)
+        if (error.response && error.response.status === 401) {
+            console.warn("[Polling] 收到 401 (Unauthorized) 錯誤，可能是 Token 問題。");
+        } else {
+             // 捕捉 axios 請求 'graph.microsoft.com' 時可能發生的網路錯誤
+            console.error("[Polling] 輪詢 Graph API 時出錯:", error.message || (error.response ? error.response.data : error));
+        }
+    }
+}
+
+// 6. 啟動輪詢迴圈
+console.log(`[Polling] 輪詢 Bot 已啟動，監聽 Chat ID: ${CHAT_ID}`);
+console.log(`輪詢間隔: ${POLL_INTERVAL_MS / 1000} 秒`);
+setInterval(pollMessages, parseInt(POLL_INTERVAL_MS || 5000));
+// 立即執行一次，避免啟動時等待
+pollMessages();
+
