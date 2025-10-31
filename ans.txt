@@ -1,0 +1,250 @@
+我充分了解個方法了，我現在想嘗試使用 webhook，以及 polling。請就兩種方法各提供一版 js code，功能先只要有"當使用者在一對一頻道詢問 bot 問題，後端接收訊息後將訊息 print 出來"。最小可執行程式
+
+好的，這非常棒，親自動手是最好的學習方式。
+
+我將為您提供兩種方法的「最小可執行程式碼 (MVP)」，功能都完全按照您的要求：在一對一聊天中，接收到訊息後，僅在後端 console.log 印出訊息內容。
+
+方案一：Webhook (Push) 方案
+這是「標準 Bot Framework」的做法。您的程式是一個 Web 伺服器，等待 Teams 雲端推送 (Push) 訊息給您。
+
+⚠️ 執行此程式碼的「必要前提」
+Azure Bot 服務： 您必須擁有一個已建立的「Azure Bot 服務」資源。
+
+ngrok： 您必須在本地電腦上執行 ngrok，並取得一個公開 HTTPS URL。
+
+ngrok http 3978 (假設您的程式跑在 port 3978)
+
+設定端點： 您必須登入 Azure Portal，找到您的「Azure Bot 服務」，在「設定」中將「訊息端點」欄位更新為您的 ngrok URL (例如：https://[your-id].ngrok.io/api/messages)。
+
+1. 專案設定
+Bash
+# 建立資料夾
+mkdir webhook-bot
+cd webhook-bot
+
+# 初始化 npm 並安裝套件
+npm init -y
+npm install botbuilder restify dotenv
+2. .env 檔案
+您需要 Azure Bot 服務的「應用程式註冊」ID 和密碼。
+
+程式碼片段
+# 從您的 "Azure Bot 服務" -> "設定" 中取得
+MICROSOFT_APP_ID="您的-Bot-App-ID"
+MICROSOFT_APP_PASSWORD="您的-Bot-Client-Secret"
+3. webhook-bot.js (最小可執行程式)
+JavaScript
+require('dotenv').config();
+const restify = require('restify');
+const { BotFrameworkAdapter, TurnContext, ActivityTypes } = require('botbuilder');
+
+// 1. 建立 Web 伺服器
+const server = restify.createServer();
+server.listen(process.env.PORT || 3978, () => {
+    console.log(`\nWebhook 伺服器已啟動，監聽 port ${server.url}`);
+    console.log('請確保 ngrok 已指向此 port，且 Azure Bot Service 的「訊息端點」已設定！');
+});
+
+// 2. 建立 Bot Framework 轉接器 (Adapter)
+// 它會自動處理所有來自 Microsoft 的驗證
+const adapter = new BotFrameworkAdapter({
+    appId: process.env.MICROSOFT_APP_ID,
+    appPassword: process.env.MICROSOFT_APP_PASSWORD
+});
+
+// 3. 處理錯誤
+adapter.onTurnError = async (context, error) => {
+    console.error(`\n[onTurnError] 發生錯誤: ${error}`);
+    // 發生錯誤時，仍在 Teams 中回覆一條訊息
+    await context.sendActivity('Bot 處理時發生錯誤。');
+};
+
+// 4. 建立主訊息端點
+server.post('/api/messages', (req, res) => {
+    // 轉接器處理傳入的請求
+    adapter.processActivity(req, res, async (context) => {
+        
+        // 檢查這是否是一個「訊息」活動
+        if (context.activity.type === ActivityTypes.Message) {
+            
+            // 檢查是否為 1:1 聊天 (personal)
+            if (context.activity.conversation.conversationType === 'personal') {
+                
+                // --- 您的 MVP 需求：僅 Print ---
+                console.log('--- [Webhook] 收到 1:1 訊息 ---');
+                console.log(`使用者: ${context.activity.from.name}`);
+                console.log(`訊息: ${context.activity.text}`);
+                console.log('---------------------------------');
+
+                // (可選) 為了讓使用者知道 Bot 有收到，您可以回覆
+                // await context.sendActivity('我收到您的訊息了 (Webhook)');
+
+            } else {
+                // 在群組中 (group/channel) 的訊息將被忽略
+                console.log(`[Webhook] 忽略來自群組/頻道的訊息: ${context.activity.text}`);
+            }
+        }
+    });
+});
+方案二：輪詢 (Pull) 方案
+這是「Graph API」的做法。您的程式是一個腳本，主動拉取 (Pull) Teams 的訊息。
+
+⚠️ 執行此程式碼的「必要前提」
+Azure App 註冊： 您必須擁有一個「Azure 應用程式註冊 (App Registration)」(不需要 Bot 服務)。
+
+API 權限： 您必須在該 App Registration 的 "API 權限" 中，添加 Microsoft Graph -> 應用程式權限 -> Chat.ReadWrite.All。
+
+管理員同意： (最大阻礙) 一位 Azure AD 全域管理員必須為這個權限點擊「授與管理員同意」。
+
+Chat ID： 您必須手動取得一個您(或 Robot 帳號) 與某人的 1:1 Chat ID (如先前所述，透過 "取得聊天連結")。
+
+1. 專案設定
+Bash
+# 建立資料夾
+mkdir polling-bot
+cd polling-bot
+
+# 初始化 npm 並安裝套件
+npm init -y
+npm install @azure/msal-node axios dotenv
+2. .env 檔案
+程式碼片段
+# 從您的 "Azure 應用程式註冊" 取得
+CLIENT_ID="您的-App-ID"
+CLIENT_SECRET="您的-Client-Secret"
+TENANT_ID="您的-Tenant-ID"
+
+# [重要] 填入您要監聽的 1:1 聊天室 ID
+CHAT_ID="19:xxxxxxxxxxxxxxxx@thread.v2" 
+
+# 輪詢間隔 (毫秒)
+POLL_INTERVAL_MS=5000 
+3. polling-bot.js (最小可執行程式)
+JavaScript
+require('dotenv').config();
+const msal = require('@azure/msal-node');
+const axios = require('axios');
+
+// 1. 從 .env 讀取設定
+const {
+    CLIENT_ID,
+    CLIENT_SECRET,
+    TENANT_ID,
+    CHAT_ID,
+    POLL_INTERVAL_MS
+} = process.env;
+
+const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}`;
+const GRAPH_ENDPOINT = 'https://graph.microsoft.com/v1.0';
+
+// 2. MSAL (驗證) 設定
+const msalConfig = {
+    auth: {
+        clientId: CLIENT_ID,
+        authority: AUTHORITY,
+        clientSecret: CLIENT_SECRET,
+    },
+};
+const cca = new msal.ConfidentialClientApplication(msalConfig);
+
+// 3. 取得 Graph API Access Token 的輔助函式
+async function getGraphToken() {
+    try {
+        const response = await cca.acquireTokenByClientCredential({
+            scopes: ['https://graph.microsoft.com/.default'],
+        });
+        return response.accessToken;
+    } catch (error) {
+        console.error("取得 Token 失敗:", error.message);
+        return null;
+    }
+}
+
+// 4. 變數：儲存最後處理的訊息 ID
+let lastProcessedMessageId = null;
+
+// 5. 變數：儲存我們 Bot 自己的 ID (避免無限迴圈)
+let myUserId = null; 
+
+async function getMyUserId(token) {
+    try {
+        const response = await axios.get(`${GRAPH_ENDPOINT}/me`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        myUserId = response.data.id;
+        console.log(`[Polling] 登入成功，Bot 自己的 User ID: ${myUserId}`);
+    } catch (error) {
+        console.error("[Polling] 無法取得 Bot 自己的 User ID:", error.message);
+    }
+}
+
+// 6. 核心：輪詢函式
+async function pollMessages() {
+    const token = await getGraphToken();
+    if (!token) {
+        console.log("[Polling] 無法取得 Token，5秒後重試...");
+        return;
+    }
+
+    // 第一次執行時，取得自己的 ID
+    if (!myUserId) {
+        await getMyUserId(token);
+    }
+
+    try {
+        // 抓取聊天室的最新一則訊息
+        const url = `${GRAPH_ENDPOINT}/chats/${CHAT_ID}/messages?$orderby=createdDateTime desc&$top=1`;
+        const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` }});
+
+        const messages = response.data.value;
+        if (!messages || messages.length === 0) {
+            return; // 聊天室為空
+        }
+
+        const latestMessage = messages[0];
+        const messageId = latestMessage.id;
+        
+        // 檢查1: 這則訊息是否處理過了？
+        if (messageId === lastProcessedMessageId) {
+            // console.log("[Polling] 沒有新訊息...");
+            return; 
+        }
+
+        // 檢查2: 這則訊息是不是 Bot 自己發的？
+        const senderId = (latestMessage.from && latestMessage.from.user) ? latestMessage.from.user.id : null;
+        if (senderId === myUserId) {
+            console.log("[Polling] 忽略自己發送的訊息...");
+            lastProcessedMessageId = messageId; // 仍然要更新 ID
+            return;
+        }
+
+        // --- 您的 MVP 需求：僅 Print ---
+        // 移除 HTML 標籤 (Teams 訊息內容是 HTML)
+        const messageContent = (latestMessage.body.content || '').replace(/<[^>]*>?/gm, '').trim();
+        const senderName = (latestMessage.from && latestMessage.from.user) ? latestMessage.from.user.displayName : '未知使用者';
+        
+        console.log('--- [Polling] 偵測到新訊息 ---');
+        console.log(`使用者: ${senderName}`);
+        console.log(`訊息: ${messageContent}`);
+        console.log('--------------------------------');
+
+        // 更新最後處理的 ID
+        lastProcessedMessageId = messageId;
+
+    } catch (error) {
+        console.error("[Polling] 輪詢時出錯:", error.response ? error.response.data : error.message);
+    }
+}
+
+// 7. 啟動輪詢迴圈
+console.log(`[Polling] 輪詢 Bot 已啟動，監聽 Chat ID: ${CHAT_ID}`);
+console.log(`輪詢間隔: ${POLL_INTERVAL_MS / 1000} 秒`);
+setInterval(pollMessages, parseInt(POLL_INTERVAL_MS));
+// 立即執行一次，避免啟動時等待
+pollMessages();
+總結
+Webhook 方案 (方案一)：程式碼更簡單 (SDK 處理掉很多事)，即時，但架設極度依賴 ngrok 和「Azure Bot 服務」的管理權限。
+
+Polling 方案 (方案二)：程式碼較多 (您要自己處理 Auth、Polling 邏輯、防呆)，有延遲，但架設完全不需公開 URL 或 ngrok。它的最大門檻是「API 權限的管理員同意」。
+
+您可以根據您較容易取得的權限（Azure Bot 服務 vs Graph API 管理員同意）來決定要先測試哪一個。
