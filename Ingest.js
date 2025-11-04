@@ -1,51 +1,80 @@
 /*
  * ingest.js (MODIFIED)
- * No longer uses @langchain/text_splitter
+ * Bypasses langchain/community for embeddings
  * Usage: node ingest.js
  */
 
-// --- We NO LONGER import RecursiveCharacterTextSplitter ---
-import { HuggingFaceTransformersEmbeddings } from '@langchain/community/embeddings/hf';
 import { Chroma } from '@langchain/community/vectorstores/chroma';
-import { promises as fs } from 'fs'; // Node.js File System module
+import { promises as fs } from 'fs';
 import path from 'path';
+// --- NEW IMPORT ---
+// We now import 'pipeline' and 'env' from the package we know works
+import { pipeline, env } from '@xenova/transformers';
 
 // --- Configuration ---
 const FILE_PATH = path.join(process.cwd(), 'my-document.txt');
 const COLLECTION_NAME = 'my_txt_collection';
 const CHROMA_URL = 'http://localhost:8000';
+const MODEL_NAME = 'Xenova/all-MiniLM-L6-v2';
 
-// --- 1. Initialize Embedding Model ---
-const embeddings = new HuggingFaceTransformersEmbeddings({
-  modelName: 'Xenova/all-MiniLM-L6-v2',
-});
+// Allows models to be loaded locally
+env.allowLocalModels = true;
 
-// --- 2. OUR NEW MANUAL TEXT SPLITTER ---
+// --- 1. OUR NEW EMBEDDING CLASS ---
 /**
- * A simple function to split text into overlapping chunks.
- * @param {string} text The full text to split.
- * @param {number} chunkSize The max size of each chunk.
- * @param {number} chunkOverlap The overlap between chunks.
- * @returns {string[]} An array of text chunks.
+ * A wrapper class to mimic LangChain's Embeddings
+ * using @xenova/transformers directly.
  */
-function manualTextSplitter(text, chunkSize, chunkOverlap) {
-  const chunks = [];
-  let i = 0;
-  
-  // Ensure overlap is smaller than chunk size
-  if (chunkOverlap >= chunkSize) {
-    console.warn("Overlap is >= chunk size, setting overlap to 0");
-    chunkOverlap = 0;
+class XenovaEmbeddings {
+  constructor(modelName) {
+    this.modelName = modelName;
+    // The pipeline is loaded once and reused
+    this.pipe = null; 
   }
 
+  // Helper to load the pipeline on first use
+  async _getPipeline() {
+    if (this.pipe === null) {
+      console.log('Loading embedding model for the first time...');
+      this.pipe = await pipeline('feature-extraction', this.modelName);
+      console.log('Embedding model loaded.');
+    }
+    return this.pipe;
+  }
+
+  // Creates vectors for all document chunks
+  async embedDocuments(texts) {
+    console.log(`Embedding ${texts.length} document chunks...`);
+    const embedder = await this._getPipeline();
+    const results = [];
+    for (const text of texts) {
+      // Create the embedding
+      const output = await embedder(text, { pooling: 'mean', normalize: true });
+      // Convert the 'data' (a Float32Array) into a standard array
+      results.push(Array.from(output.data));
+    }
+    return results;
+  }
+
+  // Creates a vector for a single query
+  async embedQuery(text) {
+    const embedder = await this._getPipeline();
+    const output = await embedder(text, { pooling: 'mean', normalize: true });
+    return Array.from(output.data);
+  }
+}
+
+// --- 2. Initialize our new Embedding Model ---
+const embeddings = new XenovaEmbeddings(MODEL_NAME);
+
+// --- 3. Our Manual Text Splitter (from before) ---
+function manualTextSplitter(text, chunkSize, chunkOverlap) {
+  // ... (This function is the same as in the previous step)
+  const chunks = [];
+  let i = 0;
+  if (chunkOverlap >= chunkSize) chunkOverlap = 0;
   while (i < text.length) {
-    // Get the end of the chunk
-    let end = i + chunkSize;
-    
-    // Add the chunk to the array
-    chunks.push(text.slice(i, end));
-    
-    // Move the start of the next chunk
+    chunks.push(text.slice(i, i + chunkSize));
     i += chunkSize - chunkOverlap;
   }
   return chunks;
@@ -59,39 +88,32 @@ async function ingestDocument() {
   console.log(`Starting ingestion for: ${FILE_PATH}`);
   
   try {
-    // --- 3. Read Text from .txt file ---
+    // --- 4. Read Text ---
     console.log('Reading text file...');
     const text = await fs.readFile(FILE_PATH, 'utf-8');
-    
-    if (!text || text.trim().length === 0) {
-      throw new Error('File is empty or could not be read.');
-    }
+    if (!text) throw new Error('File is empty.');
     console.log(`Read ${text.length} characters.`);
 
-    // --- 4. Split Text into Chunks (using our new function) ---
+    // --- 5. Split Text ---
     console.log('Splitting text into chunks...');
-    const textChunks = manualTextSplitter(text, 500, 50); // (text, chunkSize, chunkOverlap)
-    
-    // Manually format them into "Document" objects
+    const textChunks = manualTextSplitter(text, 500, 50);
     const docs = textChunks.map(chunk => ({
       pageContent: chunk,
       metadata: { source: FILE_PATH }
     }));
-    
     console.log(`Created ${docs.length} document chunks.`);
 
-    // --- 5. Initialize Chroma Vector Store ---
+    // --- 6. Initialize Chroma ---
     const chromaStore = new Chroma(embeddings, {
       collectionName: COLLECTION_NAME,
       url: CHROMA_URL,
     });
 
-    // --- 6. Store Chunks in ChromaDB ---
-    console.log('Deleting old collection (if any) and adding new documents...');
+    // --- 7. Store in ChromaDB ---
+    console.log('Deleting old collection and adding new documents...');
     await chromaStore.addDocuments(docs);
     
     console.log('✅ Ingestion complete!');
-    console.log(`Your data is in the "${COLLECTION_NAME}" collection.`);
 
   } catch (error) {
     console.error('--- Ingestion Failed ---');
@@ -99,5 +121,4 @@ async function ingestDocument() {
   }
 }
 
-// Run the ingestion
 ingestDocument();
