@@ -1,0 +1,52 @@
+這是一個非常好的總結問題。走「反向代理」這條路是企業最正規的作法，它的分工非常明確。
+一旦您的 IT 團隊幫您搞定了反向代理（讓外部能存取到您的內部伺服器），您在 Azure 端需要做的設定其實非常少，但非常關鍵。
+以下是針對 反向代理方案 的完整設定清單：
+1. Azure 端的設定 (您需要做的)
+您主要需要設定兩個資源：Azure Bot 服務 和 應用程式註冊 (App Registration)。
+A. Azure Bot Service (Bot 頻道註冊)
+這是告訴 Microsoft Teams「當有人敲這個機器人時，要把訊息送到哪裡」的地方。
+ * 關鍵動作：設定訊息端點 (Messaging Endpoint)
+   * 進入 Azure Portal -> 找到您的 Azure Bot 資源 -> 點選左側選單的 Configuration (設定)。
+   * 在 Messaging endpoint 欄位中，填入 IT 給您的公開 URL。
+   * 格式範例： https://bot.mycompany.com/api/messages
+     * 注意：必須是 https。
+     * 注意：網址結尾通常要加上您的程式碼中監聽的路徑（Node.js Bot Framework 預設通常是 /api/messages）。
+ * 關鍵動作：啟用 Teams 頻道
+   * 在 Azure Bot 資源 -> 點選左側選單的 Channels (頻道)。
+   * 點選 Microsoft Teams 圖示並啟用它。
+B. App Registration (應用程式註冊)
+這是您 Bot 的「身分證」，用來驗證安全性。
+ * 關鍵動作：建立密碼 (Client Secret)
+   * 進入 Azure Active Directory -> App Registrations -> 找到對應的 App。
+   * 在 Certificates & secrets 中建立一個新的 Secret。
+   * 重要： 您需要把 App ID 和這個 Client Secret 複製下來，這些必須寫入您內部伺服器 (10.101.xx.xx) 的環境變數 (.env) 中。Bot 程式啟動時需要它們來證明「我是合法的」。
+2. 內部伺服器端的設定 (您需要做的)
+在您的 10.101.xx.xx 機器上，您的 Bot 程式碼 (index.js) 基本上維持原樣，但環境變數要正確：
+ * .env 檔案設定：
+   MicrosoftAppId="您的 Azure App ID"
+MicrosoftAppPassword="您的 Azure Client Secret"
+MicrosoftAppType="MultiTenant" (或是 SingleTenant，看您註冊時的選擇)
+MicrosoftAppTenantId="您的 Tenant ID"
+PORT=3978 (這要跟 IT 說，請他們轉發到這個 port)
+
+3. IT 團隊端的設定 (您需要請他們做的)
+為了讓您心裡有底，這部分是 IT 需要完成的：
+ * DNS 設定： 將 bot.mycompany.com 解析到公司的反向代理伺服器 IP。
+ * SSL 憑證： 為 bot.mycompany.com 安裝合法的 SSL 憑證 (Teams 不接受 自簽憑證或 HTTP)。
+ * 反向代理規則 (Reverse Proxy Rule)：
+   * 來源： https://bot.mycompany.com/api/messages (Port 443)
+   * 轉發目標 (Destination)： http://10.101.xx.xx:3978/api/messages (您的內部伺服器)
+   * Header 處理： 確保 Host header 或其他必要的 header 正確傳遞。
+總結：流程圖
+graph LR
+    A[使用者在 Teams 發訊息] -->|1. 傳送| B(Microsoft 365 雲端)
+    B -->|2. 查詢 Azure Bot Service 設定| C{Azure Bot Service}
+    C -->|3. 取得端點 URL| D[https://bot.mycompany.com/api/messages]
+    B -->|4. HTTP POST 推送| E(公司防火牆/反向代理)
+    E -->|5. 內部轉發| F[您的內部伺服器 10.101.xx.xx:3978]
+    F -->|6. 驗證 App ID/Secret| F
+    F -->|7. 處理並回應 200 OK| E
+    E -->|8. 回傳| B
+
+簡單一句話：
+除了申請防火牆和部署網站外，您在 Azure 上唯一要做的「設定」，就是把 IT 給您的那串網址 (https://...)，填進 Azure Bot Service 的 Messaging endpoint 欄位裡。
