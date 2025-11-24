@@ -1,182 +1,81 @@
-您是對的，非常感謝您的堅持。這推翻了我關於「會議聊天室」的猜測，並指向了一個更微妙、但 100% 可以解釋這個問題的原因。
+這是一個非常實用的功能。要在 Teams 中透過 Graph API 接收並下載圖片，核心觀念只有一個：
 
-這是一個好消息，因為這代表您的 CHAT_ID 是對的，但您的登入方式（驗證流程）與您的聊天室成員不匹配。
+圖片的 URL 是受保護的，下載時必須帶上 Authorization: Bearer {token}。
 
-錯誤的真正原因：應用程式 vs. 使用者
-您目前的情境是這樣的：
+您不能直接用瀏覽器開啟那個圖片連結（會看到 401 錯誤），您的程式碼必須像呼叫 API 一樣去下載它。
 
-聊天室成員：
+Teams 中的圖片主要分兩種：
 
-成員 A： 您 (您的真人帳號)
+內嵌圖片 (Hosted Content): 使用者直接貼上 (Paste) 的截圖。它的 URL 藏在 body.content 的 HTML <img> 標籤中。
 
-成員 B： Bot (您的 robot@mycompany.com 使用者帳號)
+附件圖片 (Attachments): 使用者透過迴紋針上傳的圖片。它的 URL 在 attachments 陣列中。
 
-這是一個 User <-> User 的 1:1 聊天。
+為了簡化，我會提供一段程式碼，同時處理這兩種情況，並將它們下載為 .jpg。
 
-執行程式的「身分」：
+修改步驟
+您需要修改 polling-bot.js，加入 fs (檔案系統) 模組，並新增一個 downloadImage 函式。
 
-您的 polling-bot.js 程式目前是使用「應用程式 (Application)」權限登入的 (Client ID + Client Secret)。
+1. 引入必要的模組 (檔案最上方)
+JavaScript
 
-我們稱這個身分為 App_C。
-
-這就是衝突點：
-
-讀取 (GET)： App_C 擁有 Chat.Read.All 權限，所以它可以像「管理員」一樣，讀取 User_A 和 User_B 之間的對話。(這就是為什麼接收訊息正常)
-
-寫入 (POST)： 當 App_C 嘗試回覆這則訊息時，Graph API 發現 App_C 並不是這個聊天室的成員 (成員只有 A 和 B)。
-
-一個「非成員」的「應用程式」試圖向一個它不屬於的現有聊天室發送訊息... Graph API 將這種行為歸類為「資料遷移 (Migration)」。
-
-因此， API 拒絕了您的請求，並正確地回報：「您需要 Teamwork.Migrate.All 權限才能執行此操作。」
-
-解決方案：讓程式「以 Bot 使用者身分」登入
-您不需要更改 CHAT_ID。 您不需要申請 Teamwork.Migrate.All 權限。
-
-您只需要更改您的 polling-bot.js 取得 Token 的方式。
-
-您的程式不應該以 App_C (應用程式) 的身分登入，而應該以 User_B (您的 robot@mycompany.com 帳號) 的身分登入。
-
-幸運的是，我們之前已經討論過這個方法了：ROPC (Resource Owner Password Credentials) 流程。
-
-修正步驟
-您需要將您的 polling-bot.js 程式碼改回使用 ROPC 密碼流程來取得 Token。
-
-1. 檢查您的 .env 檔案
-請確保您有這兩行，並且填寫的是 robot@mycompany.com 帳號的真實密碼：
-
-程式碼片段
-
-ROPC_USERNAME="robot@mycompany.com"
-ROPC_PASSWORD="Bot帳號的真實密碼"
-2. 修改 polling-bot.js
-您需要兩個函式：getGraphToken_ROPC 和 pollMessages。
+// ... 原本的 require ...
+const fs = require('fs');
+const path = require('path');
+const https = require('https'); // 用於下載
+// ...
+2. 新增 downloadImage 輔助函式
+請將此函式放在 pollMessages 函式外面（例如檔案最下方）。
 
 JavaScript
 
-require('dotenv').config();
-const msal = require('@azure/msal-node'); // 雖然 ROPC 不用 msal，但先留著
-const axios = require('axios');
-const querystring = require('querystring'); // 內建模組
-
-// 1. 從 .env 讀取設定
-const {
-    CLIENT_ID,
-    CLIENT_SECRET,
-    TENANT_ID,
-    CHAT_ID,
-    POLL_INTERVAL_MS,
-    ROPC_USERNAME, // 讀取 ROPC 帳密
-    ROPC_PASSWORD
-} = process.env;
-
-const GRAPH_ENDPOINT = 'https://graph.microsoft.com/v1.0';
-
-// ... (您可以刪除 msalConfig 和 cca 的部分) ...
-
-// 3. [關鍵] 使用 ROPC 流程取得 Token
-async function getGraphToken_ROPC() {
-    // 檢查 ROPC 帳密是否存在
-    if (!ROPC_USERNAME || !ROPC_PASSWORD) {
-        console.error("錯誤：.env 檔案中缺少 ROPC_USERNAME 或 ROPC_PASSWORD");
-        return null;
-    }
-    
-    // 這是您之前提供的 ROPC 端點
-    const tokenEndpoint = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
-
-    const postData = {
-        client_id: CLIENT_ID,
-        scope: 'https.graph.microsoft.com/.default', // 確保 scope 包含 Graph API
-        grant_type: 'password',
-        username: ROPC_USERNAME,
-        password: ROPC_PASSWORD,
-        client_secret: CLIENT_SECRET // ROPC 流程也建議傳送 Client Secret
-    };
-
+// 下載圖片的輔助函式
+async function downloadImage(url, token, folder = './downloads') {
     try {
-        const response = await axios.post(
-            tokenEndpoint, 
-            querystring.stringify(postData), // 轉換為 form-urlencoded
-            {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        // 1. 確保下載資料夾存在
+        if (!fs.existsSync(folder)) {
+            fs.mkdirSync(folder);
+        }
+
+        // 2. 產生檔名 (使用時間戳記，避免重複)
+        const filename = `image_${Date.now()}_${Math.floor(Math.random() * 1000)}.jpg`;
+        const filepath = path.join(folder, filename);
+
+        console.log(`[Download] 正在下載圖片... URL: ${url}`);
+
+        // 3. 發送 GET 請求 (關鍵：必須帶 Token，並設定 responseType 為 stream)
+        const response = await axios({
+            method: 'GET',
+            url: url,
+            responseType: 'stream',
+            headers: {
+                'Authorization': `Bearer ${token}`
             }
-        );
-        return response.data.access_token;
-
-    } catch (error) {
-        console.error("ROPC 取得 Token 失敗，詳細錯誤:", error.response ? error.response.data : error.message);
-        // [重要] 檢查網路憑證撤銷錯誤
-        if (error.code && error.code === 'UNABLE_TO_CHECK_REVOCATION') {
-            console.error("--- 偵測到憑證撤銷錯誤 ---");
-            console.error("請嘗試使用 'set NODE_TLS_REJECT_UNAUTHORIZED=0' 啟動程式");
-        }
-        return null;
-    }
-}
-
-// 4. 變數：儲存最後處理的訊息 ID
-let lastProcessedMessageId = null;
-
-// [重要] 您的 Bot 帳號 (ROPC_USERNAME) 的 User ID
-// 我們需要這個來防止 Bot 回覆自己的訊息
-let myUserId = null; 
-
-async function getMyUserId(token) {
-    try {
-        // [重要] ROPC 流程 "可以" 呼叫 /me API
-        const response = await axios.get(`${GRAPH_ENDPOINT}/me`, {
-            headers: { 'Authorization': `Bearer ${token}` }
         });
-        myUserId = response.data.id;
-        console.log(`[Polling] 登入成功，Bot 使用者 ID: ${myUserId}`);
+
+        // 4. 寫入檔案
+        const writer = fs.createWriteStream(filepath);
+        response.data.pipe(writer);
+
+        return new Promise((resolve, reject) => {
+            writer.on('finish', () => {
+                console.log(`[Download] 圖片已儲存: ${filepath}`);
+                resolve(filepath);
+            });
+            writer.on('error', reject);
+        });
+
     } catch (error) {
-        console.error("[Polling] 無法取得 Bot 自己的 User ID:", error.message);
-        console.log("警告：將無法過濾自己的訊息，可能導致無限迴圈！");
+        console.error(`[Download] 下載失敗:`, error.message);
     }
 }
+3. 修改 pollMessages 函式邏輯
+在您原本處理 if (messageContent) { ... } 的地方，加入偵測圖片的邏輯。
 
+請找到 // --- 處理新訊息 --- 區塊，並替換成以下邏輯：
 
-// 5. 核心：輪詢函式
-async function pollMessages() {
-    // [關鍵] 改用 ROPC 函式
-    const token = await getGraphToken_ROPC(); 
-    if (!token) {
-        console.log("[Polling] ROPC: 無法取得 Token，5秒後重試...");
-        return;
-    }
+JavaScript
 
-    // [關鍵] ROPC 流程需要取得 /me ID
-    if (!myUserId) {
-        await getMyUserId(token);
-    }
-
-    try {
-        const url = `${GRAPH_ENDPOINT}/chats/${CHAT_ID}/messages?$orderby=createdDateTime desc&$top=1`;
-        const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` }});
-
-        const messages = response.data.value;
-        if (!messages || messages.length === 0) return;
-
-        const latestMessage = messages[0];
-        const messageId = latestMessage.id;
-        
-        if (messageId === lastProcessedMessageId) return; 
-
-        // [關鍵] ROPC 流程的 "from" 欄位是 'user'
-        const sender = latestMessage.from;
-        let isFromMyBot = false;
-        
-        if (sender && sender.user && sender.user.id === myUserId) {
-             isFromMyBot = true;
-        }
-        
-        if (isFromMyBot) {
-            console.log("[Polling] 忽略自己(ROPC User)發送的訊息...");
-            lastProcessedMessageId = messageId;
-            return;
-        }
-
-        // --- 處理新訊息 ---
+        // ... (前面省略) ...
         console.log('--- [Polling] 偵測到新訊息 ---');
         
         const senderName = (latestMessage.from && latestMessage.from.user) ? latestMessage.from.user.displayName : '未知使用者';
@@ -184,58 +83,66 @@ async function pollMessages() {
 
         const messageContent = (latestMessage.body.content || '').replace(/<[^>]*>/g, '').trim();
 
-        if (messageContent) {
-            console.log(`訊息: ${messageContent}`);
+        // ---------------------------------------------------------
+        // [新增] 圖片處理邏輯
+        // ---------------------------------------------------------
+        
+        // 情境 A: 內嵌圖片 (直接貼上的)
+        // Teams 會在 body 中包含 <img src="...">
+        // 我們用 Regex 抓出 src 屬性
+        const imgRegex = /<img[^>]+src="([^">]+)"/g;
+        let match;
+        const downloadPromises = [];
 
-            // --- [回覆訊息] ---
-            // 因為現在登入的身分 (ROPC User) 是聊天室成員，
-            // 這個 POST 請求將會成功！
+        // 掃描所有 <img> 標籤
+        while ((match = imgRegex.exec(latestMessage.body.content)) !== null) {
+            const hostedContentUrl = match[1];
+            // Teams 的 hosted content URL 通常是 graph.microsoft.com/.../$value
+            // 它是受保護的資源，需要 Token
+            downloadPromises.push(downloadImage(hostedContentUrl, token));
+        }
+
+        // 情境 B: 附件圖片 (上傳的)
+        if (latestMessage.attachments && latestMessage.attachments.length > 0) {
+            for (const attachment of latestMessage.attachments) {
+                // 確保這是圖片，且有下載連結
+                if (attachment.contentType && attachment.contentType.startsWith('image/') && attachment.contentUrl) {
+                    downloadPromises.push(downloadImage(attachment.contentUrl, token));
+                }
+            }
+        }
+
+        // 等待所有圖片下載完成
+        if (downloadPromises.length > 0) {
+            await Promise.all(downloadPromises);
+            console.log(`[System] 共下載了 ${downloadPromises.length} 張圖片`);
+        }
+        // ---------------------------------------------------------
+
+
+        if (messageContent) {
+            console.log(`文字訊息: ${messageContent}`);
+            
+            // ... (原本的回覆邏輯 send reply ...) ...
             try {
                 const replyUrl = `${GRAPH_ENDPOINT}/chats/${CHAT_ID}/messages`;
                 const replyPayload = {
                     body: { content: `Bot Echo: ${messageContent}` }
                 };
-
                 await axios.post(replyUrl, replyPayload, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
-
                 console.log("--- [Polling] 已成功回覆訊息! ---");
-
             } catch (replyError) {
-                // 如果這裡還是出錯，請貼出新的錯誤訊息
                 console.error("--- [Polling] 回覆訊息時失敗:", replyError.response ? replyError.response.data : replyError.message);
             }
-            
-        } else if (latestMessage.attachments && latestMessage.attachments.length > 0) {
-            console.log(`訊息: [附件訊息]`);
+
+        } else if (downloadPromises.length > 0) {
+            // 如果只有圖片沒有文字
+            console.log(`訊息: [純圖片訊息]`);
+             // 您也可以在這裡加一個 "收到圖片了" 的回覆
         } else {
             console.log(`訊息: [訊息為空或無法辨識]`);
         }
         
-        console.log('--------------------------------');
-        lastProcessedMessageId = messageId;
-
-    } catch (error) {
-        // ... (錯誤處理) ...
-        if (error.response && error.response.status === 404) {
-             console.error(`[Polling] 輪詢 Graph API 失敗: 404 Not Found。 CHAT_ID: "${CHAT_ID}"`);
-             clearInterval(pollingInterval);
-        } else {
-            console.error("[Polling] 輪詢 Graph API 時出錯:", error.message || (error.response ? error.response.data : error));
-        }
-    }
-}
-
-// 6. 啟動輪詢迴圈
-console.log(`[Polling] 輪詢 Bot (ROPC 模式) 已啟動...`);
-const pollingInterval = setInterval(pollMessages, parseInt(POLL_INTERVAL_MS || 5000));
-pollMessages(); // 立即執行
-總結：您需要做的
-將您的 polling-bot.js 完全替換為上面這份新的程式碼。
-
-確保您的 .env 檔案包含 ROPC_USERNAME 和 ROPC_PASSWORD，並且密碼是正確的。
-
-(重要) 如果您再次遇到「憑證撤銷」的網路錯誤，請記得使用 set NODE_TLS_REJECT_UNAUTHORIZED=0 (CMD) 或 $env:NODE_TLS_REJECT_UNAUTHORIZED="0" (PowerShell) 來啟動程式。
-
-這個版本使用 ROPC 登入，登入身分 (robot@mycompany.com) 是聊天室的成員，因此 POST (回覆) 請求將會被允許。
+        // ... (後面省略) ...
