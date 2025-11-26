@@ -1,148 +1,220 @@
-這是一個非常實用的功能。要在 Teams 中透過 Graph API 接收並下載圖片，核心觀念只有一個：
+這是一個非常關鍵的擴充階段！您現在是「手動盯著一個房間」，我們要變成「走廊上的警衛，巡視所有有動靜的房間」。
 
-圖片的 URL 是受保護的，下載時必須帶上 Authorization: Bearer {token}。
+回答您的核心問題：
 
-您不能直接用瀏覽器開啟那個圖片連結（會看到 401 錯誤），您的程式碼必須像呼叫 API 一樣去下載它。
+Robot 是否要先建立第一次 chatroom？
 
-Teams 中的圖片主要分兩種：
+不用。 最好的流程是讓使用者主動敲 Robot。
 
-內嵌圖片 (Hosted Content): 使用者直接貼上 (Paste) 的截圖。它的 URL 藏在 body.content 的 HTML <img> 標籤中。
+當使用者在 Teams 搜尋您的 Robot 並傳送第一則訊息時，Microsoft Teams 會自動建立一個 Chat ID。您的程式只需要能「偵測」到這個新冒出來的 Chat ID 即可。
 
-附件圖片 (Attachments): 使用者透過迴紋針上傳的圖片。它的 URL 在 attachments 陣列中。
+(當然，如果是 Robot 要主動去敲一個「從沒講過話」的人，Robot 才需要主動呼叫 API 建立聊天室)。
 
-為了簡化，我會提供一段程式碼，同時處理這兩種情況，並將它們下載為 .jpg。
+如何擴增更多聊天室？
 
-修改步驟
-您需要修改 polling-bot.js，加入 fs (檔案系統) 模組，並新增一個 downloadImage 函式。
+您不能把所有 CHAT_ID 寫在 .env 裡（那樣維護不完）。
 
-1. 引入必要的模組 (檔案最上方)
+您需要改變策略：從「監聽單一 ID」變成「監聽所有列表」。
+
+新的邏輯：兩層式輪詢 (Two-Step Polling)
+我們不再死守一個 CHAT_ID，而是改用 /chats API 來獲取列表。
+
+步驟 A (巡邏): 每隔幾秒，呼叫 GET /chats (並依照 lastUpdatedDateTime 排序)。這會列出 Robot 參與的所有聊天室。
+
+步驟 B (檢查): 檢查列表中的每一個聊天室，看它的「最後更新時間」是否比我們上次檢查的時間還新。
+
+步驟 C (讀取): 如果有變動，才針對那個特定的 chat_id 呼叫 GET /chats/{id}/messages 讀取內容。
+
+修改後的程式碼 (polling-bot-multi.js)
+這段程式碼會自動處理「多個使用者」同時跟 Robot 講話的情況。
+
+您不需要在 .env 裡設定 CHAT_ID 了，只要有 CLIENT_ID, SECRET, ROPC 帳密即可。
+
 JavaScript
 
-// ... 原本的 require ...
-const fs = require('fs');
-const path = require('path');
-const https = require('https'); // 用於下載
-// ...
-2. 新增 downloadImage 輔助函式
-請將此函式放在 pollMessages 函式外面（例如檔案最下方）。
+require('dotenv').config();
+const axios = require('axios');
+const querystring = require('querystring');
+const { marked } = require('marked'); // 用於 HTML 回覆
 
-JavaScript
+// .env 設定讀取
+const {
+    CLIENT_ID,
+    CLIENT_SECRET,
+    TENANT_ID,
+    ROPC_USERNAME,
+    ROPC_PASSWORD,
+    POLL_INTERVAL_MS
+} = process.env;
 
-// 下載圖片的輔助函式
-async function downloadImage(url, token, folder = './downloads') {
+const GRAPH_ENDPOINT = 'https://graph.microsoft.com/v1.0';
+
+// 1. 取得 Token (ROPC) - 與之前相同
+async function getGraphToken_ROPC() {
+    const tokenEndpoint = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
+    const postData = {
+        client_id: CLIENT_ID,
+        scope: 'https://graph.microsoft.com/.default',
+        grant_type: 'password',
+        username: ROPC_USERNAME,
+        password: ROPC_PASSWORD,
+        client_secret: CLIENT_SECRET
+    };
+
     try {
-        // 1. 確保下載資料夾存在
-        if (!fs.existsSync(folder)) {
-            fs.mkdirSync(folder);
-        }
-
-        // 2. 產生檔名 (使用時間戳記，避免重複)
-        const filename = `image_${Date.now()}_${Math.floor(Math.random() * 1000)}.jpg`;
-        const filepath = path.join(folder, filename);
-
-        console.log(`[Download] 正在下載圖片... URL: ${url}`);
-
-        // 3. 發送 GET 請求 (關鍵：必須帶 Token，並設定 responseType 為 stream)
-        const response = await axios({
-            method: 'GET',
-            url: url,
-            responseType: 'stream',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
+        const response = await axios.post(tokenEndpoint, querystring.stringify(postData), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
-
-        // 4. 寫入檔案
-        const writer = fs.createWriteStream(filepath);
-        response.data.pipe(writer);
-
-        return new Promise((resolve, reject) => {
-            writer.on('finish', () => {
-                console.log(`[Download] 圖片已儲存: ${filepath}`);
-                resolve(filepath);
-            });
-            writer.on('error', reject);
-        });
-
+        return response.data.access_token;
     } catch (error) {
-        console.error(`[Download] 下載失敗:`, error.message);
+        console.error("Token 錯誤:", error.response ? error.response.data : error.message);
+        return null;
     }
 }
-3. 修改 pollMessages 函式邏輯
-在您原本處理 if (messageContent) { ... } 的地方，加入偵測圖片的邏輯。
 
-請找到 // --- 處理新訊息 --- 區塊，並替換成以下邏輯：
+// 2. 變數：記錄每個聊天室「最後處理到的訊息 ID」
+// 格式: { "chat_id_A": "message_id_1", "chat_id_B": "message_id_2" }
+let chatCheckpoints = {}; 
 
-JavaScript
+// 紀錄 Robot 自己的 ID
+let myUserId = null;
 
-        // ... (前面省略) ...
-        console.log('--- [Polling] 偵測到新訊息 ---');
+// 3. 取得自己的 ID (為了過濾自己的訊息)
+async function getMyUserId(token) {
+    const res = await axios.get(`${GRAPH_ENDPOINT}/me`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    myUserId = res.data.id;
+    console.log(`[System] Robot ID: ${myUserId}`);
+}
+
+// 4. [核心] 處理單一聊天室的訊息
+async function processChatMessages(token, chatId) {
+    try {
+        // 讀取該聊天室最新一則訊息
+        const url = `${GRAPH_ENDPOINT}/chats/${chatId}/messages?$orderby=createdDateTime desc&$top=1`;
+        const res = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` } });
         
-        const senderName = (latestMessage.from && latestMessage.from.user) ? latestMessage.from.user.displayName : '未知使用者';
-        console.log(`使用者: ${senderName}`);
+        if (!res.data.value || res.data.value.length === 0) return;
 
-        const messageContent = (latestMessage.body.content || '').replace(/<[^>]*>/g, '').trim();
+        const latestMsg = res.data.value[0];
+        const msgId = latestMsg.id;
 
-        // ---------------------------------------------------------
-        // [新增] 圖片處理邏輯
-        // ---------------------------------------------------------
+        // 檢查 Checkpoint: 如果這則訊息已經處理過，就跳過
+        if (chatCheckpoints[chatId] === msgId) {
+            return;
+        }
+
+        // 檢查發送者: 如果是 Robot 自己發的，就跳過
+        const senderId = (latestMsg.from && latestMsg.from.user) ? latestMsg.from.user.id : null;
+        if (senderId === myUserId) {
+            // 更新 checkpoint，避免下次重複檢查
+            chatCheckpoints[chatId] = msgId;
+            return;
+        }
+
+        // --- 處理新訊息 ---
+        const senderName = latestMsg.from.user.displayName;
+        const content = (latestMsg.body.content || '').replace(/<[^>]*>/g, '').trim();
+
+        console.log(`[New Msg] 來自: ${senderName} | 內容: ${content}`);
         
-        // 情境 A: 內嵌圖片 (直接貼上的)
-        // Teams 會在 body 中包含 <img src="...">
-        // 我們用 Regex 抓出 src 屬性
-        const imgRegex = /<img[^>]+src="([^">]+)"/g;
-        let match;
-        const downloadPromises = [];
+        // 更新 Checkpoint
+        chatCheckpoints[chatId] = msgId;
 
-        // 掃描所有 <img> 標籤
-        while ((match = imgRegex.exec(latestMessage.body.content)) !== null) {
-            const hostedContentUrl = match[1];
-            // Teams 的 hosted content URL 通常是 graph.microsoft.com/.../$value
-            // 它是受保護的資源，需要 Token
-            downloadPromises.push(downloadImage(hostedContentUrl, token));
-        }
+        // --- 呼叫 LLM 並回覆 (Echo 範例) ---
+        if (content) {
+            const replyText = `Bot 回覆 ${senderName}: ${content}`;
+            const htmlReply = marked.parse(replyText); // 轉 HTML
 
-        // 情境 B: 附件圖片 (上傳的)
-        if (latestMessage.attachments && latestMessage.attachments.length > 0) {
-            for (const attachment of latestMessage.attachments) {
-                // 確保這是圖片，且有下載連結
-                if (attachment.contentType && attachment.contentType.startsWith('image/') && attachment.contentUrl) {
-                    downloadPromises.push(downloadImage(attachment.contentUrl, token));
-                }
-            }
-        }
-
-        // 等待所有圖片下載完成
-        if (downloadPromises.length > 0) {
-            await Promise.all(downloadPromises);
-            console.log(`[System] 共下載了 ${downloadPromises.length} 張圖片`);
-        }
-        // ---------------------------------------------------------
-
-
-        if (messageContent) {
-            console.log(`文字訊息: ${messageContent}`);
+            await axios.post(`${GRAPH_ENDPOINT}/chats/${chatId}/messages`, {
+                body: { contentType: 'html', content: htmlReply }
+            }, { headers: { 'Authorization': `Bearer ${token}` } });
             
-            // ... (原本的回覆邏輯 send reply ...) ...
-            try {
-                const replyUrl = `${GRAPH_ENDPOINT}/chats/${CHAT_ID}/messages`;
-                const replyPayload = {
-                    body: { content: `Bot Echo: ${messageContent}` }
-                };
-                await axios.post(replyUrl, replyPayload, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                console.log("--- [Polling] 已成功回覆訊息! ---");
-            } catch (replyError) {
-                console.error("--- [Polling] 回覆訊息時失敗:", replyError.response ? replyError.response.data : replyError.message);
-            }
-
-        } else if (downloadPromises.length > 0) {
-            // 如果只有圖片沒有文字
-            console.log(`訊息: [純圖片訊息]`);
-             // 您也可以在這裡加一個 "收到圖片了" 的回覆
-        } else {
-            console.log(`訊息: [訊息為空或無法辨識]`);
+            console.log(`[Reply] 已回覆給 ${senderName}`);
         }
+
+    } catch (e) {
+        console.error(`處理聊天室 ${chatId} 失敗:`, e.message);
+    }
+}
+
+// 5. [核心] 巡邏主程式
+async function pollAllChats() {
+    const token = await getGraphToken_ROPC();
+    if (!token) return;
+
+    if (!myUserId) await getMyUserId(token);
+
+    try {
+        // [關鍵 API] 取得所有聊天室，按最後更新時間排序，只抓前 10 個有動靜的
+        // 這樣可以避免一次抓幾百個聊天室導致效能問題
+        const listUrl = `${GRAPH_ENDPOINT}/chats?$orderby=lastUpdatedDateTime desc&$top=10`;
+        const listRes = await axios.get(listUrl, { headers: { 'Authorization': `Bearer ${token}` } });
         
-        // ... (後面省略) ...
+        const activeChats = listRes.data.value;
+
+        // 平行處理這些有動靜的聊天室
+        const promises = activeChats.map(chat => {
+            return processChatMessages(token, chat.id);
+        });
+
+        await Promise.all(promises);
+
+    } catch (e) {
+        console.error("巡邏聊天室列表失敗:", e.message);
+    }
+}
+
+// 6. 啟動
+console.log("多聊天室 Polling Bot 已啟動...");
+setInterval(pollAllChats, parseInt(POLL_INTERVAL_MS || 5000));
+pollAllChats();
+原理講解：為什麼這樣做可以擴充？
+GET /chats?$orderby=lastUpdatedDateTime desc&$top=10
+
+這是魔法所在。這行指令會問 Teams：「請給我最近有更新的前 10 個聊天室」。
+
+無論您有 100 個還是 1000 個使用者，只要有人傳訊息，那個聊天室就會瞬間「浮」到這個列表的最上面。
+
+Robot 只需要盯著這「前 10 名」看就好了，效率非常高。
+
+chatCheckpoints (記憶體)
+
+我們用一個簡單的物件來記住每個聊天室我們讀到了哪裡。
+
+{ "Chat_A": "Msg_101", "Chat_B": "Msg_55" }
+
+當 Robot 再次巡邏到 Chat_A 時，發現最新訊息還是 Msg_101，它就知道「沒事，略過」，不會重複回覆。
+
+自動探索 (Auto Discovery)
+
+當一個新使用者第一次搜尋並傳訊息給 Robot 時，Teams 會建立一個新聊天室，並更新 lastUpdatedDateTime。
+
+Robot 下一次 polling 時，這個新聊天室會出現在列表第一位。
+
+程式碼自動取得它的 id，然後開始處理。
+
+結論： 您完全不需要手動建立聊天室，讓使用者來找 Robot 即可。
+
+如果 Robot 真的需要「主動」找人呢？
+只有在 Robot 想發起對話（例如：發送每日通知），而對方從來沒跟 Robot 講過話時，您才需要「建立聊天室」。
+
+API 是： POST /chats Body:
+
+JSON
+
+{
+  "chatType": "oneOnOne",
+  "members": [
+    {
+      "roles": ["owner"],
+      "user": { "id": "Robot的User_ID" }
+    },
+    {
+      "roles": ["owner"],
+      "user": { "userPrincipalName": "user@mycompany.com" } // 對方的 Email
+    }
+  ]
+}
+呼叫成功後，它會回傳一個 id，您就可以用那個 ID 去發訊息了。但通常做客服機器人，被動等待使用者來敲是比較好的設計。
