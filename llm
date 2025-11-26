@@ -1,275 +1,659 @@
-沒問題！將程式碼模組化是專案走向成熟的必經之路。這樣做可以讓程式碼更易讀、更好維護，而且若未來要換不同的 LLM 或增加功能時，不會動到核心邏輯。
+現在還有個問題，每次重新執行環境前我都需要輸入 set NODE_TLS_REJECT_UNAUTHORIZED=0, 否則會跳出 error, 這要如何解決？
 
-我為您設計了一個標準的 Node.js 分層架構：
+這是一個在企業內部網路開發時非常經典的痛點。
 
-📂 建議的專案結構
-Plaintext
+雖然「正確」的解法是請 MIS 開通防火牆的 CRL/OCSP 驗證網址，但為了開發效率，我們可以直接在專案層級自動化這個設定，讓您不用每次手動輸入。
 
-my-teams-bot/
-├── .env                  # 環境變數 (機密資料)
-├── package.json          # 專案依賴定義
-├── index.js              # [入口] 程式啟動點
-└── src/
-    ├── config.js         # [設定] 集中管理環境變數與常數
-    ├── bot.js            # [核心] Bot 的主要邏輯 (巡邏、檢查、狀態管理)
-    ├── services/
-    │   ├── auth.js       # [服務] 負責取得 Token (ROPC)
-    │   └── graph.js      # [服務] 負責所有與 Microsoft Graph API 的互動
-    └── utils/
-        └── formatter.js  # [工具] Markdown 轉 HTML 等格式處理
-1. src/config.js (設定檔)
-將所有 process.env 的讀取放在這裡。如果缺少變數，這裡可以直接報錯，避免程式跑到一半才崩潰。
+以下有三種方法，推薦您使用方法一最簡單。
+
+方法一：寫入 .env 檔案 (最推薦)
+既然您的專案已經使用了 dotenv 套件，您可以直接將這個設定當作一個環境變數。
+
+打開您的 .env 檔案。
+
+在任何一行加入：
+
+程式碼片段
+NODE_TLS_REJECT_UNAUTHORIZED=0
+原理： 當您的程式執行 require('dotenv').config() 時，它會自動把這個變數載入到 process.env 中，Node.js 的 HTTPS 模組讀到這個設定後，就會略過憑證檢查。
+
+方法二：寫在 index.js 的最上方 (最暴力有效)
+如果您擔心 .env 載入的時間點不夠早，您可以直接把它寫死在程式的第一行。
+
+打開您的入口檔案（例如 index.js），在所有 require 之前加入這行：
 
 JavaScript
+// [嚴重警告] 僅限開發環境使用：忽略 SSL 憑證驗證 (解決公司內網憑證撤銷檢查失敗問題)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
+// 下面才是原本的程式碼
+const config = require('./src/config');
+// ...
+這樣每次您跑 node index.js 時，程式碼自己就會先設定好環境變數。
+
+方法三：修改 package.json (啟動腳本)
+如果您習慣用 npm start 來啟動程式，可以修改 package.json 的 scripts 區塊。
+
+Windows (CMD) 寫法：
+
+JSON
+"scripts": {
+  "start": "set NODE_TLS_REJECT_UNAUTHORIZED=0 && node index.js"
+}
+跨平台 (Windows/Mac/Linux) 寫法： (需先安裝 npm install cross-env --save-dev)
+
+JSON
+"scripts": {
+  "start": "cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 node index.js"
+}
+之後您只要輸入 npm start，它就會自動帶入這個設定並啟動程式。
+
+⚠️ 重要資安提醒
+請記得，NODE_TLS_REJECT_UNAUTHORIZED=0 的意思是告訴 Node.js：「即使伺服器的身分證 (SSL) 是假的、過期的、或無法驗證的，也請無條件信任它。」
+
+開發階段： 在公司內網遇到防火牆阻擋 CRL 檢查時，這樣做是 OK 的。
+
+正式上線： 如果未來這個 Bot 要部署到雲端或生產環境，請務必移除這行設定，否則您的 Bot 會容易受到「中間人攻擊 (Man-in-the-Middle Attack)」。
+
+如果我有很多不同的robot account, 各自有client id和secret，我該如何在部署時或程式內支援多個bot? 未來也可能會擴充
+
+這是一個從「單一腳本」邁向「系統化架構」的關鍵轉變。
+
+要支援多個 Robot，最核心的觀念是：將「設定」與「邏輯」分離，並將 Bot 的狀態封裝起來。
+
+目前您的程式碼大多是使用全域變數（例如 chatCheckpoints, myUserId），如果同時跑兩個 Bot，這些變數會打架。
+
+解決方案是採用 物件導向 (Class-based) 的設計模式。每一個 Bot 都是這個 Class 的一個 實例 (Instance)，擁有自己獨立的 Token、ID 和檢查點。
+
+以下是修改步驟：
+
+1. 修改 .env (配置多組帳密)
+為了安全，密碼依然不能進程式碼，我們使用前綴來區分不同 Bot。
+
+程式碼片段
+# === 全域設定 ===
+TENANT_ID="common_tenant_id"
+POLL_INTERVAL_MS=5000
+
+# === Robot 1: HR 小幫手 ===
+BOT_1_NAME="HR_Bot"
+BOT_1_CLIENT_ID="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+BOT_1_SECRET="secret_a"
+BOT_1_USER="hr_robot@company.com"
+BOT_1_PASS="password_a"
+
+# === Robot 2: IT 報修單 ===
+BOT_2_NAME="IT_Bot"
+BOT_2_CLIENT_ID="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+BOT_2_SECRET="secret_b"
+BOT_2_USER="it_robot@company.com"
+BOT_2_PASS="password_b"
+2. 修改 src/config.js (回傳陣列)
+我們不再回傳單一組設定，而是回傳一個 Bot 設定列表。
+
+JavaScript
 require('dotenv').config();
 
-const config = {
-    clientId: process.env.CLIENT_ID,
-    clientSecret: process.env.CLIENT_SECRET,
+const common = {
     tenantId: process.env.TENANT_ID,
-    ropcUsername: process.env.ROPC_USERNAME,
-    ropcPassword: process.env.ROPC_PASSWORD,
     pollInterval: parseInt(process.env.POLL_INTERVAL_MS || 5000),
-    graphEndpoint: 'https://graph.microsoft.com/v1.0',
+    graphEndpoint: 'https://graph.microsoft.com/v1.0', // 或 beta
     authEndpoint: `https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`
 };
 
-// 簡單防呆檢查
-const requiredKeys = ['clientId', 'clientSecret', 'tenantId', 'ropcUsername', 'ropcPassword'];
-const missingKeys = requiredKeys.filter(key => !config[key]);
+// 定義 Bot 列表
+const bots = [
+    {
+        name: process.env.BOT_1_NAME || 'Bot 1',
+        clientId: process.env.BOT_1_CLIENT_ID,
+        clientSecret: process.env.BOT_1_SECRET,
+        username: process.env.BOT_1_USER,
+        password: process.env.BOT_1_PASS
+    },
+    {
+        name: process.env.BOT_2_NAME || 'Bot 2',
+        clientId: process.env.BOT_2_CLIENT_ID,
+        clientSecret: process.env.BOT_2_SECRET,
+        username: process.env.BOT_2_USER,
+        password: process.env.BOT_2_PASS
+    }
+    // 未來要擴充，只要在這裡加新的物件，並去 .env 加變數即可
+];
 
-if (missingKeys.length > 0) {
-    console.error(`錯誤: .env 檔案缺少以下設定: ${missingKeys.join(', ')}`);
-    process.exit(1);
-}
+// 過濾掉沒有設定完整的 Bot (防止報錯)
+const activeBots = bots.filter(b => b.clientId && b.password);
 
-module.exports = config;
-2. src/services/auth.js (驗證服務)
-專門負責跟 Azure AD 打交道，拿到 Token。
+module.exports = {
+    common,
+    bots: activeBots
+};
+3. 修改 src/services/auth.js (接收參數)
+驗證函式不能再讀取全域 config，必須接受參數。
 
 JavaScript
-
 const axios = require('axios');
 const querystring = require('querystring');
-const config = require('../config');
+const { common } = require('../config'); // 只讀取通用設定
 
-async function getGraphToken() {
+// 現在這個函式是純粹的工具，不綁定特定 Bot
+async function getGraphToken(botCreds) {
     const postData = {
-        client_id: config.clientId,
+        client_id: botCreds.clientId,
         scope: 'https://graph.microsoft.com/.default',
         grant_type: 'password',
-        username: config.ropcUsername,
-        password: config.ropcPassword,
-        client_secret: config.clientSecret
+        username: botCreds.username,
+        password: botCreds.password,
+        client_secret: botCreds.clientSecret
     };
 
     try {
-        const response = await axios.post(config.authEndpoint, querystring.stringify(postData), {
+        const response = await axios.post(common.authEndpoint, querystring.stringify(postData), {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
         return response.data.access_token;
     } catch (error) {
-        console.error("[Auth] 取得 Token 失敗:", error.response ? error.response.data : error.message);
+        console.error(`[Auth] ${botCreds.name} 取得 Token 失敗:`, error.message);
         return null;
     }
 }
 
 module.exports = { getGraphToken };
-3. src/services/graph.js (Graph API 服務)
-這裡封裝了所有 axios 請求。Bot 的邏輯層不需要知道 API URL 長什麼樣子，只需要呼叫函式。
+4. 重構 src/bot.js (改為 Class)
+這是最關鍵的一步。我們將之前的邏輯封裝成一個類別。
 
 JavaScript
-
-const axios = require('axios');
-const config = require('../config');
-
-// 建立一個預設配置的 axios 實例
-const graphClient = axios.create({
-    baseURL: config.graphEndpoint
-});
-
-// 取得自己的 User ID
-async function getMyUserId(token) {
-    const res = await graphClient.get('/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
-    });
-    return res.data.id;
-}
-
-// 取得最近有更新的聊天室列表
-async function getRecentChats(token, top = 10) {
-    const url = `/chats?$orderby=lastUpdatedDateTime desc&$top=${top}`;
-    const res = await graphClient.get(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
-    });
-    return res.data.value || [];
-}
-
-// 取得特定聊天室的最新一則訊息
-async function getLatestMessage(token, chatId) {
-    const url = `/chats/${chatId}/messages?$orderby=createdDateTime desc&$top=1`;
-    const res = await graphClient.get(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
-    });
-    return (res.data.value && res.data.value.length > 0) ? res.data.value[0] : null;
-}
-
-// 發送 HTML 回覆
-async function sendHtmlReply(token, chatId, htmlContent) {
-    const url = `/chats/${chatId}/messages`;
-    await graphClient.post(url, {
-        body: {
-            contentType: 'html',
-            content: htmlContent
-        }
-    }, {
-        headers: { 'Authorization': `Bearer ${token}` }
-    });
-}
-
-module.exports = {
-    getMyUserId,
-    getRecentChats,
-    getLatestMessage,
-    sendHtmlReply
-};
-4. src/utils/formatter.js (格式處理工具)
-處理 Markdown 轉 HTML。
-
-JavaScript
-
-const { marked } = require('marked');
-
-function convertMarkdownToHtml(text) {
-    if (!text) return '';
-    // 可以加入更多的客製化處理
-    return marked.parse(text);
-}
-
-module.exports = { convertMarkdownToHtml };
-5. src/bot.js (Bot 核心邏輯)
-這是大腦。它管理狀態 (checkpoints)，並協調各個服務來完成任務。
-
-JavaScript
-
 const authService = require('./services/auth');
 const graphService = require('./services/graph');
 const formatter = require('./utils/formatter');
 
-// 狀態管理：記錄每個聊天室讀取到的 Message ID
-let chatCheckpoints = {};
-let myUserId = null;
-
-async function startPolling() {
-    console.log("正在取得 Access Token...");
-    const token = await authService.getGraphToken();
-    if (!token) return;
-
-    // 第一次執行時，取得 Bot 自己的 ID
-    if (!myUserId) {
-        try {
-            myUserId = await graphService.getMyUserId(token);
-            console.log(`[System] Bot User ID: ${myUserId}`);
-        } catch (e) {
-            console.error("[System] 無法取得 Bot ID，略過本次循環");
-            return;
-        }
-    }
-
-    try {
-        // 1. 取得活躍聊天室
-        const activeChats = await graphService.getRecentChats(token);
-
-        // 2. 平行處理每個聊天室
-        const promises = activeChats.map(chat => processSingleChat(token, chat.id));
-        await Promise.all(promises);
-
-    } catch (e) {
-        console.error("[Loop] 巡邏發生錯誤:", e.message);
-    }
-}
-
-// 處理單一聊天室的邏輯
-async function processSingleChat(token, chatId) {
-    try {
-        const latestMsg = await graphService.getLatestMessage(token, chatId);
-        if (!latestMsg) return;
-
-        const msgId = latestMsg.id;
-
-        // 檢查 Checkpoint
-        if (chatCheckpoints[chatId] === msgId) return;
-
-        // 檢查是否為自己發的
-        const senderId = (latestMsg.from && latestMsg.from.user) ? latestMsg.from.user.id : null;
-        if (senderId === myUserId) {
-            chatCheckpoints[chatId] = msgId; // 更新 checkpoint
-            return;
-        }
-
-        // --- 處理新訊息 ---
-        const senderName = latestMsg.from.user ? latestMsg.from.user.displayName : '未知';
-        const rawContent = (latestMsg.body.content || '').replace(/<[^>]*>/g, '').trim();
-
-        console.log(`[New Msg] Chat: ${chatId} | From: ${senderName} | Content: ${rawContent}`);
+class PollingBot {
+    constructor(botConfig) {
+        this.config = botConfig;
+        this.name = botConfig.name;
         
-        // 更新 Checkpoint (防止重複處理)
-        chatCheckpoints[chatId] = msgId;
+        // 每個 Bot 擁有自己獨立的狀態
+        this.chatCheckpoints = {}; 
+        this.myUserId = null;
+    }
 
-        // --- 業務邏輯 (LLM 整合點) ---
-        if (rawContent) {
-            // 模擬 LLM 回應
-            const replyText = `**Bot 回覆 ${senderName}**: 我收到了你的訊息: "${rawContent}"`;
-            const htmlReply = formatter.convertMarkdownToHtml(replyText);
+    // 啟動一次巡邏
+    async runCycle() {
+        // console.log(`[${this.name}] 開始巡邏...`);
+        
+        // 1. 取得該 Bot 的 Token
+        const token = await authService.getGraphToken(this.config);
+        if (!token) return;
 
-            await graphService.sendHtmlReply(token, chatId, htmlReply);
-            console.log(`[Reply] 已回覆給 ${senderName}`);
+        // 2. 取得該 Bot 的 User ID (只做一次)
+        if (!this.myUserId) {
+            try {
+                this.myUserId = await graphService.getMyUserId(token);
+                console.log(`[${this.name}] ID確認: ${this.myUserId}`);
+            } catch (e) {
+                console.error(`[${this.name}] 無法取得 User ID`);
+                return;
+            }
         }
 
-    } catch (e) {
-        console.error(`[Chat Error] 處理聊天室 ${chatId} 失敗:`, e.message);
+        try {
+            // 3. 取得該 Bot 的活躍聊天室
+            const activeChats = await graphService.getRecentChats(token);
+
+            // 4. 平行處理
+            const promises = activeChats.map(chat => this.processSingleChat(token, chat.id));
+            await Promise.all(promises);
+
+        } catch (e) {
+            console.error(`[${this.name}] 巡邏錯誤:`, e.message);
+        }
+    }
+
+    async processSingleChat(token, chatId) {
+        try {
+            const latestMsg = await graphService.getLatestMessage(token, chatId);
+            if (!latestMsg) return;
+
+            const msgId = latestMsg.id;
+
+            // 使用 this.chatCheckpoints (自己的記憶體)
+            if (this.chatCheckpoints[chatId] === msgId) return;
+
+            // 檢查是否為自己發的
+            const senderId = (latestMsg.from && latestMsg.from.user) ? latestMsg.from.user.id : null;
+            if (senderId === this.myUserId) {
+                this.chatCheckpoints[chatId] = msgId;
+                return;
+            }
+
+            // --- 處理訊息 ---
+            const senderName = latestMsg.from.user ? latestMsg.from.user.displayName : '未知';
+            const rawContent = (latestMsg.body.content || '').replace(/<[^>]*>/g, '').trim();
+
+            console.log(`[${this.name}] 收到來自 ${senderName}: ${rawContent}`);
+            this.chatCheckpoints[chatId] = msgId;
+
+            if (rawContent) {
+                // 這裡可以依據 this.name 做不同的業務邏輯
+                let replyText = `**${this.name} 回覆**: ${rawContent}`;
+                
+                // 例如：如果是 IT Bot，加上特殊邏輯
+                if (this.name === 'IT_Bot') replyText += " (IT 報修處理中...)";
+
+                const htmlReply = formatter.convertMarkdownToHtml(replyText);
+                await graphService.sendHtmlReply(token, chatId, htmlReply);
+            }
+
+        } catch (e) {
+            console.error(`[${this.name}] 處理聊天室 ${chatId} 失敗:`, e.message);
+        }
     }
 }
 
-module.exports = { startPolling };
-6. index.js (入口檔案)
-保持極簡，只負責啟動。
+module.exports = PollingBot;
+5. 修改 index.js (迴圈啟動)
+最後，在入口檔案中，我們初始化所有的 Bot。
 
 JavaScript
-
-const config = require('./src/config');
-const bot = require('./src/bot');
+const { bots, common } = require('./src/config'); // 注意這裡引入結構變了
+const PollingBot = require('./src/bot');
 
 console.log("========================================");
-console.log("   Teams Polling Bot (Multi-Chat) v2    ");
-console.log(`   Poll Interval: ${config.pollInterval / 1000}s`);
+console.log(`   Multi-Bot System Starting...`);
+console.log(`   Active Bots: ${bots.length}`);
 console.log("========================================");
 
-// 立即執行一次
-bot.startPolling();
+// 1. 實例化所有 Bot
+const botInstances = bots.map(botConfig => new PollingBot(botConfig));
 
-// 設定排程
+// 2. 定義巡邏函式
+async function runAllBots() {
+    // 讓所有 Bot 平行執行一次巡邏
+    const promises = botInstances.map(bot => bot.runCycle());
+    await Promise.all(promises);
+}
+
+// 3. 啟動
+runAllBots();
+
 setInterval(() => {
-    bot.startPolling();
-}, config.pollInterval);
-這樣拆分的好處
-關注點分離 (Separation of Concerns)：
+    runAllBots();
+}, common.pollInterval);
+這樣做的好處
+完全隔離： Robot A 的訊息狀態不會污染 Robot B。
 
-graph.js 只管發請求，不管邏輯。
+容易擴充： 未來要加 Robot C，您只需要修改 .env 和 config.js，完全不需要動 bot.js 或 index.js 的程式碼。
 
-bot.js 只管邏輯，不管 HTTP Header 怎麼組。
+邏輯客製化： 您可以在 bot.js 裡面透過 if (this.name === '...') 來為不同的機器人寫不同的處理邏輯，或者乾脆繼承 Class 來覆寫。
 
-auth.js 壞了就修 auth.js，不會改壞別的地方。
+接著我想加一些進階功能，當user傳送訊息時，如果是新訊息，則針對user, bot, message建立短暫的in-memory-content. 所以當user持續問問題時，可以記錄短期的歷史訊息。並且設定當Bot收到來自user的貼圖回覆，或是時間5分鐘後，則關閉並刪除此次訊息的in-memory-content。
 
-可擴充性：
+這是一個非常棒的功能，這讓您的 Robot 從「單問單答」進化成具備「上下文 (Context)」能力的 AI 助理。
 
-如果您想增加「下載圖片」功能，只要在 graph.js 加一個 downloadImage 函式，然後在 bot.js 呼叫即可。
+這在技術上通常稱為 「對話狀態管理 (Conversation State Management)」。
 
-如果您想把 LLM 從模擬改成 OpenAI，只要在 bot.js 的「業務邏輯」區塊修改即可。
+我們需要實作一個 MemoryManager 類別，它具備以下邏輯：
 
-安全性：
+儲存 (Storage): 使用 Map 以 chatId 為 Key，儲存歷史訊息陣列。
 
-所有環境變數檢查都在 config.js 一開始就做完，不會發生程式跑了三天後因為缺少變數而掛掉。
+滑動視窗 (Sliding Window Timer): 每次有新訊息進來，就清除舊的計時器，設定新的 5 分鐘計時器。時間到就刪除該 chatId 的資料。
 
-現在您可以直接建立這些檔案，將程式碼貼入即可運行！
+中斷觸發 (Interrupt): 偵測貼圖，如果符合則立即執行刪除。
+
+以下是實作步驟與程式碼：
+
+1. 新增 src/services/memory.js
+我們將記憶體管理的邏輯獨立出來，保持程式碼乾淨。
+
+JavaScript
+// src/services/memory.js
+
+class MemoryManager {
+    constructor(ttlSeconds = 300) { // 預設 5 分鐘 (300秒)
+        this.ttl = ttlSeconds * 1000;
+        this.conversations = new Map(); // 用 Map 儲存所有聊天室的狀態
+    }
+
+    /**
+     * 取得某個聊天室的歷史紀錄
+     */
+    getHistory(chatId) {
+        if (!this.conversations.has(chatId)) {
+            return [];
+        }
+        return this.conversations.get(chatId).messages;
+    }
+
+    /**
+     * 新增訊息到歷史紀錄，並重置計時器
+     * @param {string} chatId 
+     * @param {string} role - 'user' | 'assistant'
+     * @param {string} name - 發言者名稱
+     * @param {string} content - 訊息內容
+     */
+    addMessage(chatId, role, name, content) {
+        // 1. 如果是新對話，初始化結構
+        if (!this.conversations.has(chatId)) {
+            this.conversations.set(chatId, {
+                messages: [],
+                timer: null
+            });
+            console.log(`[Memory] 新增對話紀錄: ${chatId}`);
+        }
+
+        const session = this.conversations.get(chatId);
+
+        // 2. 新增訊息
+        session.messages.push({ role, name, content, timestamp: Date.now() });
+
+        // 3. 重置計時器 (Sliding Window)
+        this._resetTimer(chatId, session);
+    }
+
+    /**
+     * 強制結束對話 (例如收到貼圖)
+     */
+    clearSession(chatId) {
+        if (this.conversations.has(chatId)) {
+            const session = this.conversations.get(chatId);
+            if (session.timer) clearTimeout(session.timer); // 清除計時器
+            
+            this.conversations.delete(chatId); // 刪除資料
+            console.log(`[Memory] 對話已結束並清除: ${chatId}`);
+            return true;
+        }
+        return false;
+    }
+
+    // --- 內部私有方法 ---
+    
+    _resetTimer(chatId, session) {
+        // 如果已經有計時器，先清除 (代表使用者還在講話，延後過期時間)
+        if (session.timer) {
+            clearTimeout(session.timer);
+        }
+
+        // 設定新的計時器
+        session.timer = setTimeout(() => {
+            console.log(`[Memory] 對話逾時 (${this.ttl / 1000}s)，自動清除: ${chatId}`);
+            this.conversations.delete(chatId);
+        }, this.ttl);
+    }
+}
+
+module.exports = MemoryManager;
+2. 修改 src/bot.js
+我們需要在 Bot 初始化時載入 MemoryManager，並在處理訊息的流程中加入「貼圖判斷」和「歷史紀錄讀寫」。
+
+JavaScript
+const authService = require('./services/auth');
+const graphService = require('./services/graph');
+const formatter = require('./utils/formatter');
+const MemoryManager = require('./services/memory'); // [新增]
+
+class PollingBot {
+    constructor(botConfig) {
+        this.config = botConfig;
+        this.name = botConfig.name;
+        this.chatCheckpoints = {};
+        this.myUserId = null;
+        
+        // [新增] 每個 Bot 擁有自己獨立的記憶體管理器
+        // 設定 5 分鐘 (300秒)
+        this.memory = new MemoryManager(300); 
+    }
+
+    // ... (runCycle 保持不變) ...
+
+    async processSingleChat(token, chatId) {
+        try {
+            const latestMsg = await graphService.getLatestMessage(token, chatId);
+            if (!latestMsg) return;
+
+            const msgId = latestMsg.id;
+            if (this.chatCheckpoints[chatId] === msgId) return;
+
+            // 檢查是否為 Bot 自己發的
+            const senderId = (latestMsg.from && latestMsg.from.user) ? latestMsg.from.user.id : null;
+            if (senderId === this.myUserId) {
+                this.chatCheckpoints[chatId] = msgId;
+                return;
+            }
+
+            // --- 處理新訊息 ---
+            const senderName = latestMsg.from.user ? latestMsg.from.user.displayName : '未知';
+            
+            // [關鍵] 偵測是否為貼圖
+            // Teams 的貼圖通常是 <img ... class="animated-sticker"> 或包含在 <div> 中
+            // 簡單判斷：如果有 <img ...> 且看起來像 sticker，或是純附件
+            // 這裡用一個簡單的 Regex 檢查 HTML 中是否包含 sticker 關鍵字 (Teams 特性)
+            const rawBody = latestMsg.body.content || '';
+            const isSticker = /sticker|giphy/i.test(rawBody) || (latestMsg.attachments && latestMsg.attachments.length > 0 && !rawBody.trim());
+            
+            const rawContent = rawBody.replace(/<[^>]*>/g, '').trim(); // 轉純文字
+
+            console.log(`[${this.name}] 收到來自 ${senderName}: ${isSticker ? '[貼圖/附件]' : rawContent}`);
+            this.chatCheckpoints[chatId] = msgId;
+
+            // --- 邏輯分支 ---
+
+            // 情境 A: 使用者傳送貼圖 -> 結束對話
+            if (isSticker) {
+                const cleared = this.memory.clearSession(chatId);
+                if (cleared) {
+                    await graphService.sendHtmlReply(token, chatId, "已收到貼圖，結束本次對話記憶。");
+                }
+                return; // 不做後續 LLM 處理
+            }
+
+            // 情境 B: 一般文字訊息 -> 記錄並回應
+            if (rawContent) {
+                // 1. 記錄 User 訊息到記憶體
+                this.memory.addMessage(chatId, 'user', senderName, rawContent);
+
+                // 2. 取得目前為止的歷史紀錄 (給 LLM 用)
+                const history = this.memory.getHistory(chatId);
+                
+                // 3. 呼叫 LLM (這裡模擬)
+                // 實際上您會把 `history` 陣列整個丟給 OpenAI
+                const replyText = await this.mockLlmResponse(history, senderName);
+
+                // 4. 發送回覆
+                const htmlReply = formatter.convertMarkdownToHtml(replyText);
+                await graphService.sendHtmlReply(token, chatId, htmlReply);
+
+                // 5. [重要] 記錄 Bot 的回覆到記憶體 (這樣下次才接得上)
+                this.memory.addMessage(chatId, 'assistant', this.name, replyText);
+            }
+
+        } catch (e) {
+            console.error(`[${this.name}] 處理聊天室 ${chatId} 失敗:`, e.message);
+        }
+    }
+
+    // 模擬 LLM (支援 Context)
+    async mockLlmResponse(history, currentUserName) {
+        // 取得上一句 (最近一句)
+        const lastMsg = history[history.length - 1];
+        
+        // 簡單規則：如果歷史紀錄超過 1 句，就表示有上下文
+        if (history.length > 2) {
+            return `(記憶模式) ${currentUserName}，我記得我們剛剛在聊... 您總共說了 ${Math.floor(history.length / 2)} 次話。`;
+        } else {
+            return `你好 ${currentUserName}，這是一個新的對話開始。`;
+        }
+    }
+}
+
+module.exports = PollingBot;
+3. 重點解析
+如何判斷貼圖 (Sticker)?
+Teams Graph API 對於貼圖的處理有點混亂，通常有兩種形式：
+
+Giphy/Sticker: HTML body 會包含 <img src="..." alt="sticker">，且 src 往往來自 giphy.com 或 Teams 的 CDN。
+
+空訊息附件: 有些貼圖會被視為 attachment，導致 body.content 幾乎是空的或只有 <p>&nbsp;</p>。
+
+我在程式碼中使用了 isSticker 的判斷邏輯：
+
+JavaScript
+const isSticker = /sticker|giphy/i.test(rawBody) || (latestMsg.attachments.length > 0 && !rawContent);
+這是一個通用的判定，您可以根據實際觀察到的 HTML 結構（用 console.log(rawBody) 印出來看）來微調 Regex。
+
+滑動視窗 (5分鐘計時)
+在 MemoryManager 的 _resetTimer 方法中：
+
+每次呼叫 addMessage (User 說話或 Bot 說話)，舊的 setTimeout 就會被 clearTimeout 取消。
+
+然後建立一個全新的 5 分鐘倒數。
+
+這確保了只要對話持續進行，記憶就不會消失；只有當雙方都沉默 5 分鐘後，記憶體才會釋放。
+
+測試方式
+測試記憶：
+
+User: "我叫小明"
+
+Bot: "你好小明" (存入記憶)
+
+User: "我剛剛說我叫什麼？"
+
+Bot (讀取 History): "你叫小明"
+
+測試貼圖中斷：
+
+(接續上文)
+
+User: [傳送一張貼圖]
+
+Bot: "已結束本次對話記憶。"
+
+User: "我剛剛說我叫什麼？"
+
+Bot: "你好，這是一個新的對話開始。" (因為記憶已被清除)
+
+測試超時：
+
+說完話後，去喝杯咖啡等 5 分鐘。
+
+回來再問 Bot，它應該會忘記之前的對話。
+
+是robot最後的回覆收到特定的表情符號 emoji，比如打勾，則終止對話
+
+這是一個非常符合直覺的互動設計。在 Teams 中，我們通常會用「已讀」或「打勾」來表示「我知道了、結束了」。
+
+要實作這個功能，我們不需要改變架構，只需要在 src/bot.js 的判斷邏輯中，加入對 特定 Emoji (✅) 的偵測即可。
+
+修改思路
+解析內容： 我們已經把 HTML 轉成純文字 (rawContent) 了。
+
+偵測規則： 檢查 rawContent 是否包含我們指定的 Emoji (例如 ✅, ✔️, 👌)。
+
+觸發動作： 如果偵測到了，就呼叫 memory.clearSession() 清除記憶，並回傳一個簡單的確認 (或不回傳)。
+
+修改程式碼 (src/bot.js)
+請找到 processSingleChat 方法，並在處理 rawContent 的地方加入以下邏輯：
+
+JavaScript
+// src/bot.js
+
+// ... (前面的程式碼)
+
+    async processSingleChat(token, chatId) {
+        try {
+            // ... (取得最新訊息、檢查 Checkpoint、排除自己發的訊息) ...
+
+            // --- 處理新訊息 ---
+            const senderName = latestMsg.from.user ? latestMsg.from.user.displayName : '未知';
+            
+            // 1. 取得純文字內容 (移除 HTML)
+            const rawBody = latestMsg.body.content || '';
+            const rawContent = rawBody.replace(/<[^>]*>/g, '').trim(); 
+
+            // 2. [新增] 定義終止對話的 Emoji 列表
+            // 您可以加入任何您想支援的符號，例如：打勾、OK手勢、或是文字 "end"
+            const terminationSymbols = ['✅', '✔️', '☑️', '👌', '👍'];
+            
+            // 3. [新增] 檢查是否為終止訊號
+            // 這裡使用 some() 來檢查內容是否包含上述任一符號
+            // 或者使用 strict equal (===) 來限制「只能傳一個符號」才算數
+            const isTermination = terminationSymbols.some(symbol => rawContent.includes(symbol));
+
+            // 4. [修改] 貼圖判斷 (原本的邏輯)
+            const isSticker = /sticker|giphy/i.test(rawBody) || (latestMsg.attachments && latestMsg.attachments.length > 0 && !rawContent);
+
+            console.log(`[${this.name}] 收到來自 ${senderName}: ${rawContent} (終止訊號: ${isTermination})`);
+            this.chatCheckpoints[chatId] = msgId;
+
+            // --- 邏輯分支 ---
+
+            // 情境 A: 收到「終止 Emoji」或「貼圖」 -> 結束對話
+            if (isTermination || isSticker) {
+                const cleared = this.memory.clearSession(chatId);
+                
+                if (cleared) {
+                    // [選用] 您可以選擇回傳一句「對話已結束」，或是安靜地結束
+                    // 如果是打勾，通常安靜結束或回一個簡單的 "Bye" 體驗比較好
+                    await graphService.sendHtmlReply(token, chatId, "👌 (對話記憶已清除)");
+                }
+                return; // 結束，不送給 LLM
+            }
+
+            // 情境 B: 一般文字訊息 -> 記錄並回應 (保持原本邏輯)
+            if (rawContent) {
+                this.memory.addMessage(chatId, 'user', senderName, rawContent);
+                const history = this.memory.getHistory(chatId);
+                
+                // 呼叫 LLM...
+                const replyText = await this.mockLlmResponse(history, senderName);
+
+                const htmlReply = formatter.convertMarkdownToHtml(replyText);
+                await graphService.sendHtmlReply(token, chatId, htmlReply);
+
+                this.memory.addMessage(chatId, 'assistant', this.name, replyText);
+            }
+
+        } catch (e) {
+            console.error(`[${this.name}] 處理聊天室 ${chatId} 失敗:`, e.message);
+        }
+    }
+
+// ... (後面的程式碼)
+重點說明
+terminationSymbols 陣列：
+
+我建議多放幾個類似的符號，因為使用者可能會用到不同版本的打勾 (例如綠色打勾 ✅ 或黑色打勾 ✔️)。
+
+我也加入了 👍，因為很多使用者習慣按讚來結束對話。
+
+判斷方式 (includes vs ===)：
+
+rawContent.includes(symbol): 只要訊息包含打勾就算。例如使用者回：「沒問題 ✅」，這樣也會觸發清除記憶。這通常比較方便。
+
+rawContent === symbol: 使用者必須只傳送「✅」一個字才算。這比較嚴格，避免誤判。
+
+上面的範例是使用 includes (寬鬆模式)。
+
+Teams 的 "Reaction" (重要區別)：
+
+上面的程式碼處理的是使用者「發送一則新訊息」，內容是 Emoji。
+
+如果使用者是在您 Robot 的訊息上按右鍵 -> 點選 Emoji 反應 (Reaction)：
+
+Graph API 的 Polling 機制很難偵測到這個動作（因為那不會產生「新訊息」，而是更新「舊訊息」）。
+
+為了開發簡單與穩定性，建議引導使用者**「請回覆 ✅ 結束對話」**，而不是去按那個反應按鈕。
+
+測試流程
+啟動 Robot。
+
+User: "你好，今天天氣如何？" (Robot 回答，建立記憶)
+
+User: "那明天呢？" (Robot 根據記憶回答)
+
+User: "✅" (或 "好的 ✅")
+
+Robot: "👌 (對話記憶已清除)"
+
+User: "明天呢？"
+
+Robot: "你好，這是一個新的對話開始。" (因為記憶已被清除，它忘記了上下文)
