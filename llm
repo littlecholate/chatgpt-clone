@@ -1,0 +1,275 @@
+沒問題！將程式碼模組化是專案走向成熟的必經之路。這樣做可以讓程式碼更易讀、更好維護，而且若未來要換不同的 LLM 或增加功能時，不會動到核心邏輯。
+
+我為您設計了一個標準的 Node.js 分層架構：
+
+📂 建議的專案結構
+Plaintext
+
+my-teams-bot/
+├── .env                  # 環境變數 (機密資料)
+├── package.json          # 專案依賴定義
+├── index.js              # [入口] 程式啟動點
+└── src/
+    ├── config.js         # [設定] 集中管理環境變數與常數
+    ├── bot.js            # [核心] Bot 的主要邏輯 (巡邏、檢查、狀態管理)
+    ├── services/
+    │   ├── auth.js       # [服務] 負責取得 Token (ROPC)
+    │   └── graph.js      # [服務] 負責所有與 Microsoft Graph API 的互動
+    └── utils/
+        └── formatter.js  # [工具] Markdown 轉 HTML 等格式處理
+1. src/config.js (設定檔)
+將所有 process.env 的讀取放在這裡。如果缺少變數，這裡可以直接報錯，避免程式跑到一半才崩潰。
+
+JavaScript
+
+require('dotenv').config();
+
+const config = {
+    clientId: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    tenantId: process.env.TENANT_ID,
+    ropcUsername: process.env.ROPC_USERNAME,
+    ropcPassword: process.env.ROPC_PASSWORD,
+    pollInterval: parseInt(process.env.POLL_INTERVAL_MS || 5000),
+    graphEndpoint: 'https://graph.microsoft.com/v1.0',
+    authEndpoint: `https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`
+};
+
+// 簡單防呆檢查
+const requiredKeys = ['clientId', 'clientSecret', 'tenantId', 'ropcUsername', 'ropcPassword'];
+const missingKeys = requiredKeys.filter(key => !config[key]);
+
+if (missingKeys.length > 0) {
+    console.error(`錯誤: .env 檔案缺少以下設定: ${missingKeys.join(', ')}`);
+    process.exit(1);
+}
+
+module.exports = config;
+2. src/services/auth.js (驗證服務)
+專門負責跟 Azure AD 打交道，拿到 Token。
+
+JavaScript
+
+const axios = require('axios');
+const querystring = require('querystring');
+const config = require('../config');
+
+async function getGraphToken() {
+    const postData = {
+        client_id: config.clientId,
+        scope: 'https://graph.microsoft.com/.default',
+        grant_type: 'password',
+        username: config.ropcUsername,
+        password: config.ropcPassword,
+        client_secret: config.clientSecret
+    };
+
+    try {
+        const response = await axios.post(config.authEndpoint, querystring.stringify(postData), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+        return response.data.access_token;
+    } catch (error) {
+        console.error("[Auth] 取得 Token 失敗:", error.response ? error.response.data : error.message);
+        return null;
+    }
+}
+
+module.exports = { getGraphToken };
+3. src/services/graph.js (Graph API 服務)
+這裡封裝了所有 axios 請求。Bot 的邏輯層不需要知道 API URL 長什麼樣子，只需要呼叫函式。
+
+JavaScript
+
+const axios = require('axios');
+const config = require('../config');
+
+// 建立一個預設配置的 axios 實例
+const graphClient = axios.create({
+    baseURL: config.graphEndpoint
+});
+
+// 取得自己的 User ID
+async function getMyUserId(token) {
+    const res = await graphClient.get('/me', {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    return res.data.id;
+}
+
+// 取得最近有更新的聊天室列表
+async function getRecentChats(token, top = 10) {
+    const url = `/chats?$orderby=lastUpdatedDateTime desc&$top=${top}`;
+    const res = await graphClient.get(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    return res.data.value || [];
+}
+
+// 取得特定聊天室的最新一則訊息
+async function getLatestMessage(token, chatId) {
+    const url = `/chats/${chatId}/messages?$orderby=createdDateTime desc&$top=1`;
+    const res = await graphClient.get(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    return (res.data.value && res.data.value.length > 0) ? res.data.value[0] : null;
+}
+
+// 發送 HTML 回覆
+async function sendHtmlReply(token, chatId, htmlContent) {
+    const url = `/chats/${chatId}/messages`;
+    await graphClient.post(url, {
+        body: {
+            contentType: 'html',
+            content: htmlContent
+        }
+    }, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+}
+
+module.exports = {
+    getMyUserId,
+    getRecentChats,
+    getLatestMessage,
+    sendHtmlReply
+};
+4. src/utils/formatter.js (格式處理工具)
+處理 Markdown 轉 HTML。
+
+JavaScript
+
+const { marked } = require('marked');
+
+function convertMarkdownToHtml(text) {
+    if (!text) return '';
+    // 可以加入更多的客製化處理
+    return marked.parse(text);
+}
+
+module.exports = { convertMarkdownToHtml };
+5. src/bot.js (Bot 核心邏輯)
+這是大腦。它管理狀態 (checkpoints)，並協調各個服務來完成任務。
+
+JavaScript
+
+const authService = require('./services/auth');
+const graphService = require('./services/graph');
+const formatter = require('./utils/formatter');
+
+// 狀態管理：記錄每個聊天室讀取到的 Message ID
+let chatCheckpoints = {};
+let myUserId = null;
+
+async function startPolling() {
+    console.log("正在取得 Access Token...");
+    const token = await authService.getGraphToken();
+    if (!token) return;
+
+    // 第一次執行時，取得 Bot 自己的 ID
+    if (!myUserId) {
+        try {
+            myUserId = await graphService.getMyUserId(token);
+            console.log(`[System] Bot User ID: ${myUserId}`);
+        } catch (e) {
+            console.error("[System] 無法取得 Bot ID，略過本次循環");
+            return;
+        }
+    }
+
+    try {
+        // 1. 取得活躍聊天室
+        const activeChats = await graphService.getRecentChats(token);
+
+        // 2. 平行處理每個聊天室
+        const promises = activeChats.map(chat => processSingleChat(token, chat.id));
+        await Promise.all(promises);
+
+    } catch (e) {
+        console.error("[Loop] 巡邏發生錯誤:", e.message);
+    }
+}
+
+// 處理單一聊天室的邏輯
+async function processSingleChat(token, chatId) {
+    try {
+        const latestMsg = await graphService.getLatestMessage(token, chatId);
+        if (!latestMsg) return;
+
+        const msgId = latestMsg.id;
+
+        // 檢查 Checkpoint
+        if (chatCheckpoints[chatId] === msgId) return;
+
+        // 檢查是否為自己發的
+        const senderId = (latestMsg.from && latestMsg.from.user) ? latestMsg.from.user.id : null;
+        if (senderId === myUserId) {
+            chatCheckpoints[chatId] = msgId; // 更新 checkpoint
+            return;
+        }
+
+        // --- 處理新訊息 ---
+        const senderName = latestMsg.from.user ? latestMsg.from.user.displayName : '未知';
+        const rawContent = (latestMsg.body.content || '').replace(/<[^>]*>/g, '').trim();
+
+        console.log(`[New Msg] Chat: ${chatId} | From: ${senderName} | Content: ${rawContent}`);
+        
+        // 更新 Checkpoint (防止重複處理)
+        chatCheckpoints[chatId] = msgId;
+
+        // --- 業務邏輯 (LLM 整合點) ---
+        if (rawContent) {
+            // 模擬 LLM 回應
+            const replyText = `**Bot 回覆 ${senderName}**: 我收到了你的訊息: "${rawContent}"`;
+            const htmlReply = formatter.convertMarkdownToHtml(replyText);
+
+            await graphService.sendHtmlReply(token, chatId, htmlReply);
+            console.log(`[Reply] 已回覆給 ${senderName}`);
+        }
+
+    } catch (e) {
+        console.error(`[Chat Error] 處理聊天室 ${chatId} 失敗:`, e.message);
+    }
+}
+
+module.exports = { startPolling };
+6. index.js (入口檔案)
+保持極簡，只負責啟動。
+
+JavaScript
+
+const config = require('./src/config');
+const bot = require('./src/bot');
+
+console.log("========================================");
+console.log("   Teams Polling Bot (Multi-Chat) v2    ");
+console.log(`   Poll Interval: ${config.pollInterval / 1000}s`);
+console.log("========================================");
+
+// 立即執行一次
+bot.startPolling();
+
+// 設定排程
+setInterval(() => {
+    bot.startPolling();
+}, config.pollInterval);
+這樣拆分的好處
+關注點分離 (Separation of Concerns)：
+
+graph.js 只管發請求，不管邏輯。
+
+bot.js 只管邏輯，不管 HTTP Header 怎麼組。
+
+auth.js 壞了就修 auth.js，不會改壞別的地方。
+
+可擴充性：
+
+如果您想增加「下載圖片」功能，只要在 graph.js 加一個 downloadImage 函式，然後在 bot.js 呼叫即可。
+
+如果您想把 LLM 從模擬改成 OpenAI，只要在 bot.js 的「業務邏輯」區塊修改即可。
+
+安全性：
+
+所有環境變數檢查都在 config.js 一開始就做完，不會發生程式跑了三天後因為缺少變數而掛掉。
+
+現在您可以直接建立這些檔案，將程式碼貼入即可運行！
